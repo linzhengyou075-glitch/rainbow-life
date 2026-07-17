@@ -5,7 +5,10 @@ import html
 import json
 import os
 import secrets
-from urllib.parse import urlencode
+import base64
+from urllib.parse import urlencode, quote
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.error import HTTPError, URLError
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -18,6 +21,9 @@ TZ = datetime.timezone(datetime.timedelta(hours=8))
 WEB_SECRET = os.getenv('RAINBOW_WEB_SECRET') or os.getenv('LINE_CHANNEL_SECRET') or 'rainbow-life-change-me'
 OWNER_USER_ID = os.getenv('RAINBOW_OWNER_USER_ID', '').strip()
 TOKEN_TTL = 60 * 60 * 12
+PLAYER_COOKIE = 'rainbow_player'
+ADMIN_COOKIE = 'rainbow_admin'
+SESSION_TTL = 60 * 60 * 12
 
 router = APIRouter()
 
@@ -31,16 +37,71 @@ def _sign(user_id, group_id, exp):
     return hmac.new(WEB_SECRET.encode('utf-8'), raw, hashlib.sha256).hexdigest()
 
 
+def _public_base_url():
+    raw = (os.getenv('PUBLIC_BASE_URL') or os.getenv('RENDER_EXTERNAL_URL') or os.getenv('APP_BASE_URL') or '').strip()
+    if not raw:
+        host = (os.getenv('RENDER_EXTERNAL_HOSTNAME') or '').strip()
+        if host:
+            raw = 'https://' + host
+    if raw and not raw.startswith(('http://','https://')):
+        raw = 'https://' + raw
+    return raw.rstrip('/')
+
+
 def make_access_url(user_id, group_id, path='/player'):
-    base = (os.getenv('PUBLIC_BASE_URL') or os.getenv('RENDER_EXTERNAL_URL') or '').rstrip('/')
+    base = _public_base_url()
     if not base:
         return ''
     exp = _now_ts() + TOKEN_TTL
+    sep = '&' if '?' in path else '?'
     query = urlencode({'uid': user_id, 'gid': group_id, 'exp': exp, 'sig': _sign(user_id, group_id, exp)})
-    return f'{base}{path}?{query}'
+    return f'{base}{path}{sep}{query}'
+
+
+def make_player_entry_url(group_id, target='/player'):
+    base = _public_base_url()
+    if not base or not group_id or group_id == 'PRIVATE':
+        return ''
+    safe_target = target if str(target).startswith('/player') else '/player'
+    return f"{base}/player/entry?{urlencode({'gid':str(group_id),'target':safe_target})}"
+
+
+def _token_secret(kind='player'):
+    if kind == 'admin':
+        return os.getenv('ADMIN_WEB_SECRET') or os.getenv('LINE_CHANNEL_SECRET') or WEB_SECRET
+    return WEB_SECRET
+
+
+def _encode_token(data, kind='player'):
+    payload = base64.urlsafe_b64encode(json.dumps(data,separators=(',',':')).encode()).decode().rstrip('=')
+    sig = hmac.new(_token_secret(kind).encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return payload + '.' + sig
+
+
+def _decode_token(token, kind='player'):
+    try:
+        payload, sig = token.split('.',1)
+        expected = hmac.new(_token_secret(kind).encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected): return None
+        data = json.loads(base64.urlsafe_b64decode((payload + '=' * (-len(payload)%4)).encode()).decode())
+        if int(data.get('exp',0)) < _now_ts(): return None
+        return data
+    except Exception:
+        return None
+
+
+def _session_auth(request):
+    for cookie, kind in ((PLAYER_COOKIE,'player'),(ADMIN_COOKIE,'admin')):
+        data = _decode_token(request.cookies.get(cookie,''), kind)
+        if data and data.get('uid') and data.get('gid'):
+            return str(data['uid']), str(data['gid'])
+    return None
 
 
 def _auth(request: Request):
+    session = _session_auth(request)
+    if session:
+        return session
     uid = str(request.query_params.get('uid') or request.headers.get('x-rainbow-user') or '').strip()
     gid = str(request.query_params.get('gid') or request.headers.get('x-rainbow-group') or '').strip()
     exp = str(request.query_params.get('exp') or '').strip()
@@ -56,6 +117,36 @@ def _auth(request: Request):
     if not hmac.compare_digest(sig, _sign(uid, gid, exp_i)):
         raise HTTPException(status_code=401, detail='登入驗證失敗。')
     return uid, gid
+
+
+def _oauth_ready():
+    return bool(os.getenv('LINE_LOGIN_CHANNEL_ID') and os.getenv('LINE_LOGIN_CHANNEL_SECRET') and _public_base_url())
+
+
+def _oauth_callback_url():
+    return _public_base_url() + '/player/oauth/callback'
+
+
+def _line_authorize_url(gid, target):
+    state = _encode_token({'gid':gid,'target':target,'kind':'line_oauth_state','exp':_now_ts()+600})
+    params = {'response_type':'code','client_id':os.getenv('LINE_LOGIN_CHANNEL_ID',''),'redirect_uri':_oauth_callback_url(),'state':state,'scope':'openid profile'}
+    return 'https://access.line.me/oauth2/v2.1/authorize?' + urlencode(params)
+
+
+def _exchange_line_code(code):
+    payload = urlencode({'grant_type':'authorization_code','code':code,'redirect_uri':_oauth_callback_url(),'client_id':os.getenv('LINE_LOGIN_CHANNEL_ID',''),'client_secret':os.getenv('LINE_LOGIN_CHANNEL_SECRET','')}).encode()
+    req = UrlRequest('https://api.line.me/oauth2/v2.1/token', data=payload, headers={'Content-Type':'application/x-www-form-urlencoded'}, method='POST')
+    try:
+        with urlopen(req, timeout=15) as r: return json.loads(r.read().decode())
+    except Exception: return {}
+
+
+def _verify_id_token(id_token):
+    payload = urlencode({'id_token':id_token,'client_id':os.getenv('LINE_LOGIN_CHANNEL_ID','')}).encode()
+    req = UrlRequest('https://api.line.me/oauth2/v2.1/verify', data=payload, headers={'Content-Type':'application/x-www-form-urlencoded'}, method='POST')
+    try:
+        with urlopen(req, timeout=15) as r: return json.loads(r.read().decode())
+    except Exception: return {}
 
 
 def _role(group_id, user_id):
@@ -223,18 +314,60 @@ def register_rainbow_web(app, line_bot_api):
         return HTMLResponse(_dashboard_html())
 
     @app.get('/player/entry')
-    async def player_entry_redirect(request: Request):
-        # 相容舊 LINE Bot 入口，完整保留簽章與群組參數。
-        return RedirectResponse('/player' + _query_suffix(request), status_code=302)
+    async def player_entry(request: Request, gid: str = '', target: str = '/player'):
+        # 新舊入口皆支援：舊簽章直接通過；只有 gid 的共用入口則走 LINE Login。
+        if request.query_params.get('uid') and request.query_params.get('sig'):
+            _auth(request)
+            return RedirectResponse('/player' + _query_suffix(request), status_code=302)
+        gid = str(gid or '').strip()
+        target = target if str(target).startswith('/player') else '/player'
+        if not gid:
+            raise HTTPException(400, '入口缺少群組資訊，請回 LINE 群組重新開啟。')
+        if not _oauth_ready():
+            raise HTTPException(503, 'LINE Login 尚未設定完整。')
+        response = RedirectResponse(_line_authorize_url(gid, target), status_code=302)
+        response.delete_cookie(PLAYER_COOKIE, path='/')
+        return response
+
+    @app.get('/player/oauth/callback')
+    async def player_oauth_callback(code: str = '', state: str = '', error: str = ''):
+        data = _decode_token(state, 'player')
+        if not data or data.get('kind') != 'line_oauth_state' or error or not code:
+            raise HTTPException(401, 'LINE 登入已取消或驗證失敗。')
+        token_data = _exchange_line_code(code)
+        verified = _verify_id_token(str(token_data.get('id_token') or ''))
+        uid = str(verified.get('sub') or '').strip()
+        gid = str(data.get('gid') or '').strip()
+        target = str(data.get('target') or '/player')
+        if not uid or not gid:
+            raise HTTPException(401, '無法取得 LINE 登入身分。')
+        response = RedirectResponse(target, status_code=303)
+        response.set_cookie(PLAYER_COOKIE, _encode_token({'uid':uid,'gid':gid,'kind':'session','exp':_now_ts()+SESSION_TTL},'player'), httponly=True, secure=True, samesite='lax', max_age=SESSION_TTL, path='/')
+        return response
 
     @app.get('/admin')
     async def admin_redirect(request: Request):
-        _auth(request)
+        uid, gid = _auth(request)
+        if _role(gid, uid) == 'member':
+            raise HTTPException(403, '你沒有管理權限。')
         return RedirectResponse('/player' + _query_suffix(request) + '#admin', status_code=302)
 
     @app.get('/admin/access')
-    async def admin_access_redirect(request: Request):
-        # 相容舊管理入口，交由新版 /admin 驗證權限。
+    async def admin_access(request: Request, token: str = ''):
+        # 支援舊 admin_web token 與新版簽章網址。
+        if token:
+            data = _decode_token(token, 'admin')
+            if not data or data.get('kind') != 'access':
+                raise HTTPException(401, '管理連結已失效。')
+            uid, gid = str(data.get('uid') or ''), str(data.get('gid') or '')
+            if not uid or not gid or _role(gid, uid) == 'member':
+                raise HTTPException(403, '你沒有管理權限。')
+            response = RedirectResponse('/player#admin', status_code=303)
+            response.set_cookie(ADMIN_COOKIE, _encode_token({'uid':uid,'gid':gid,'kind':'session','exp':_now_ts()+SESSION_TTL},'admin'), httponly=True, secure=True, samesite='lax', max_age=SESSION_TTL, path='/')
+            return response
+        uid, gid = _auth(request)
+        if _role(gid, uid) == 'member':
+            raise HTTPException(403, '你沒有管理權限。')
         return RedirectResponse('/admin' + _query_suffix(request), status_code=302)
 
     @app.get('/api/rainbow/me')

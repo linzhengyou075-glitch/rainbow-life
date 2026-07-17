@@ -695,7 +695,7 @@ BUILD_ID = "rainbow-life-final-deploy"
 app = FastAPI()
 
 # Rainbow Life 全新個人中心＋後台（Phase 2）
-from rainbow_web import register_rainbow_web, make_access_url
+from rainbow_web import register_rainbow_web, make_access_url, make_player_entry_url
 from game_database import ensure_game_center_tables, seed_game_settings
 from game_center import handle_game_center_command, configure_line_bot_api
 from flex_ui import web_admin_entry_flex
@@ -704,7 +704,7 @@ def make_admin_access_url(user_id, group_id, path="/admin"):
     return make_access_url(user_id, group_id, path)
 
 def make_player_access_url(user_id, group_id, path="/player"):
-    return make_access_url(user_id, group_id, path)
+    return make_player_entry_url(group_id, path)
 
 def make_public_card_url(group_id, user_id):
     return make_access_url(user_id, group_id, "/player")
