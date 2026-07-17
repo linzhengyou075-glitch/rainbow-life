@@ -222,10 +222,20 @@ def register_rainbow_web(app, line_bot_api):
         _auth(request)
         return HTMLResponse(_dashboard_html())
 
+    @app.get('/player/entry')
+    async def player_entry_redirect(request: Request):
+        # 相容舊 LINE Bot 入口，完整保留簽章與群組參數。
+        return RedirectResponse('/player' + _query_suffix(request), status_code=302)
+
     @app.get('/admin')
     async def admin_redirect(request: Request):
         _auth(request)
-        return RedirectResponse('/player' + _query_suffix(request) + '#admin')
+        return RedirectResponse('/player' + _query_suffix(request) + '#admin', status_code=302)
+
+    @app.get('/admin/access')
+    async def admin_access_redirect(request: Request):
+        # 相容舊管理入口，交由新版 /admin 驗證權限。
+        return RedirectResponse('/admin' + _query_suffix(request), status_code=302)
 
     @app.get('/api/rainbow/me')
     async def api_me(request: Request):
