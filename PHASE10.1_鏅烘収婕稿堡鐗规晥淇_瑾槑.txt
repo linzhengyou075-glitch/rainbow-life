@@ -1,0 +1,11 @@
+Rainbow Life Phase 10.1
+
+修正：Phase 10 首頁智慧漸層標題未穩定套用。
+
+本次調整：
+1. 首頁全部主要標題直接套用 smart-gradient-title 共用 class。
+2. 加強 WebKit/Android 瀏覽器相容性。
+3. 加入 -webkit-text-fill-color 與 !important，避免卡片樣式覆蓋。
+4. 保留 Phase 10 康康5日期及活動中心自由管理全部功能。
+
+覆蓋檔案：rainbow_web.py
