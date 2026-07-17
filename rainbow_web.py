@@ -2,10 +2,14 @@ import datetime
 import hashlib
 import hmac
 import html
+import re
+from html.parser import HTMLParser
 import json
 import os
 import secrets
 import base64
+import threading
+import time
 from urllib.parse import urlencode, quote
 from urllib.request import Request as UrlRequest, urlopen
 from urllib.error import HTTPError, URLError
@@ -26,6 +30,23 @@ ADMIN_COOKIE = 'rainbow_admin'
 SESSION_TTL = 60 * 60 * 12
 
 router = APIRouter()
+
+_WEATHER_CACHE = {}
+_WEATHER_LOCK = threading.Lock()
+WEATHER_CACHE_SECONDS = 300
+_FAMILY_CACHE = {}
+_FAMILY_LOCK = threading.Lock()
+FAMILY_CACHE_SECONDS = 300
+FAMILY_EVENT_URL = 'https://www.family.com.tw/Marketing/zh/Event'
+_SEVEN_CACHE = {}
+_SEVEN_LOCK = threading.Lock()
+SEVEN_CACHE_SECONDS = 300
+SEVEN_EVENT_URL = 'https://www.7-11.com.tw/special/article_new.aspx?item=Event_E001'
+_MCD_CACHE = {}
+_MCD_LOCK = threading.Lock()
+MCD_CACHE_SECONDS = 300
+MCD_EVENT_URL = 'https://www.mcdonalds.com/tw/zh-tw.html'
+CWA_DATASET_ID = os.getenv('CWA_WEATHER_DATASET', 'F-D0047-089').strip()
 
 
 def _now_ts():
@@ -287,10 +308,331 @@ def _dashboard_html():
     return r'''<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#120b38"><title>Rainbow Life</title>
 <style>
 :root{--panel:rgba(24,16,67,.82);--line:rgba(197,172,255,.38);--muted:#d6cff0}*{box-sizing:border-box}body{margin:0;color:#fff;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;background:#07051a;min-height:100vh;overflow-x:hidden}body:before{content:"";position:fixed;inset:-25%;z-index:-3;background:radial-gradient(circle at 15% 18%,rgba(70,155,255,.32),transparent 26%),radial-gradient(circle at 80% 20%,rgba(255,86,192,.28),transparent 25%),radial-gradient(circle at 50% 85%,rgba(144,82,255,.34),transparent 28%),linear-gradient(145deg,#07051a,#16073b 55%,#07152b);animation:cosmos 14s ease-in-out infinite alternate}.stars{position:fixed;inset:0;z-index:-2;pointer-events:none;background-image:radial-gradient(circle,#fff 1px,transparent 1.6px),radial-gradient(circle,rgba(151,216,255,.9) 1px,transparent 1.8px);background-size:42px 42px,73px 73px;opacity:.22;animation:stars 28s linear infinite}@keyframes cosmos{to{transform:scale(1.07) rotate(2deg);filter:hue-rotate(15deg)}}@keyframes stars{to{background-position:220px 330px,310px 250px}}@keyframes spin{to{transform:rotate(360deg)}}@keyframes float{50%{transform:translateY(-7px)}}@keyframes shimmer{to{background-position:220% center}}.app{display:grid;grid-template-columns:230px minmax(0,1fr);min-height:100vh}.side{padding:22px 14px;border-right:1px solid rgba(155,129,255,.24);background:rgba(8,5,29,.73);backdrop-filter:blur(22px);position:sticky;top:0;height:100vh}.logo{font-size:22px;font-weight:900;margin:0 12px 24px;background:linear-gradient(90deg,#79d8ff,#d98cff,#ff8dcf,#ffe17b);background-size:220% auto;-webkit-background-clip:text;color:transparent;animation:shimmer 4s linear infinite}.nav-title{font-size:11px;letter-spacing:.14em;color:#aaa0d3;margin:20px 12px 8px}.nav button{width:100%;border:1px solid transparent;color:#f4efff;background:transparent;text-align:left;padding:12px 13px;border-radius:14px;margin:3px 0;font-size:14px}.nav button.active,.nav button:hover{background:linear-gradient(90deg,rgba(122,80,255,.78),rgba(233,74,185,.72));border-color:rgba(255,255,255,.16)}.main{padding:22px;max-width:1300px;width:100%;margin:auto}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.top h2{margin:0;font-size:20px}.badge{padding:8px 13px;border-radius:999px;background:rgba(42,29,100,.72);border:1px solid var(--line);font-size:12px}.card{border:1px solid var(--line);background:linear-gradient(155deg,rgba(31,21,80,.84),rgba(15,11,48,.80));border-radius:22px;padding:17px;box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 18px 50px rgba(0,0,0,.23);backdrop-filter:blur(17px)}.card h3{margin:0 0 12px}.version-mark{font-size:11px;color:#cfc4ff;text-align:right;margin:-6px 2px 8px;opacity:.75}.dashboard-carousel{display:none;margin-bottom:14px;background:linear-gradient(125deg,rgba(70,30,130,.92),rgba(105,35,125,.84))}.dashboard-carousel.show{display:block}.carousel-head{display:flex;justify-content:space-between;align-items:center}.dots{display:flex;gap:5px}.dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.3)}.dot.active{width:18px;border-radius:8px;background:#fff}.slide{min-height:118px;display:none;align-items:center;gap:14px}.slide.active{display:flex}.slide-icon{font-size:42px;width:62px;height:62px;display:grid;place-items:center;border-radius:18px;background:rgba(255,255,255,.1)}.slide b{font-size:22px}.slide small{display:block;color:var(--muted);margin-bottom:5px}.hero{position:relative;overflow:hidden;min-height:300px;padding:27px;display:grid;grid-template-columns:210px 1fr;gap:25px;align-items:center;background:linear-gradient(125deg,rgba(34,21,88,.94),rgba(62,38,143,.84) 52%,rgba(137,48,147,.79))}.avatar-wrap{position:relative;display:grid;place-items:center;animation:float 5s ease-in-out infinite}.avatar-wrap:before{content:"";position:absolute;width:212px;height:212px;border-radius:50%;background:conic-gradient(#6ed8ff,#9a72ff,#ff68c8,#ffd86a,#6ed8ff);animation:spin 7s linear infinite;box-shadow:0 0 40px rgba(177,111,255,.7)}.avatar-wrap.leader:before,.avatar-wrap.owner:before{width:222px;height:222px;background:conic-gradient(#ffe98a,#ffb32f,#ff6dcc,#8edfff,#fff4a8,#ffe98a);box-shadow:0 0 24px #ffd45f,0 0 55px rgba(255,93,203,.8)}.avatar-wrap.leader:after,.avatar-wrap.owner:after{content:"✦  ✧  ✦";position:absolute;z-index:5;bottom:-25px;color:#ffe688;font-size:20px;letter-spacing:10px;text-shadow:0 0 10px #fff,0 0 20px #ffbd42;animation:float 2.5s ease-in-out infinite}.avatar{position:relative;z-index:2;width:194px;height:194px;border-radius:50%;object-fit:cover;object-position:center;background:#17103f;border:7px solid #100b33}.crown{position:absolute;z-index:6;top:-35px;left:50%;transform:translateX(-50%);font-size:49px;filter:drop-shadow(0 0 12px #ffd75a);animation:float 2.7s ease-in-out infinite}.hero-info{min-width:0}.eyebrow{font-size:11px;letter-spacing:.16em;color:#d7ccff}.hero h1{font-size:35px;margin:4px 0 8px;background:linear-gradient(90deg,#fff,#cfbaff,#ff9fd8);-webkit-background-clip:text;color:transparent}.title-pill{display:inline-flex;padding:7px 12px;border:1px solid rgba(255,255,255,.18);border-radius:999px;background:rgba(12,8,43,.42)}.personal-card{margin-top:14px;background:linear-gradient(135deg,rgba(43,27,105,.92),rgba(95,34,119,.82));min-height:160px}.personal-carousel{margin-top:17px}.personal-slide{display:none}.personal-slide.active{display:block}.personal-slide small{color:var(--muted)}.personal-value{font-size:20px;font-weight:800;margin:5px 0}.level-row{display:flex;justify-content:space-between;gap:10px}.progress{height:13px;background:rgba(7,5,30,.72);border-radius:99px;overflow:hidden;margin-top:9px;border:1px solid rgba(255,255,255,.09)}.progress i{display:block;min-width:10px;height:100%;background:linear-gradient(90deg,#62c7ff,#9b74ff,#ff68c8,#ffd86a);background-size:220% auto;animation:shimmer 3s linear infinite;box-shadow:0 0 16px rgba(255,104,200,.8)}.grid{display:grid;grid-template-columns:1.25fr .95fr;gap:14px;margin-top:14px}.announcement{min-height:220px;position:relative;overflow:hidden;background:linear-gradient(130deg,rgba(48,29,117,.92),rgba(120,42,125,.80))}.announcement .boy{position:absolute;right:-10px;bottom:-35px;width:220px;filter:drop-shadow(0 14px 18px rgba(0,0,0,.32));animation:float 5s ease-in-out infinite}.announcement-content{max-width:64%;min-height:130px}.announcement-content h2{font-size:23px}.announcement-content p{line-height:1.7}.daily-slide{display:none;min-height:58px;padding:14px;border-radius:16px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08)}.daily-slide.active{display:block}.daily-slide small{color:var(--muted)}.daily-slide b{display:block;font-size:18px;margin-top:5px}.quick-card{margin-top:14px}.quick{display:grid;grid-template-columns:repeat(7,1fr);gap:9px}.quick button{border:1px solid rgba(178,153,255,.28);background:linear-gradient(155deg,rgba(37,25,96,.9),rgba(25,18,67,.82));color:white;border-radius:17px;padding:15px 6px;font-size:12px}.quick span{display:block;font-size:25px;margin-bottom:6px}.admin-zone,.owner-zone{display:none;margin-top:14px}.admin-zone.show,.owner-zone.show{display:block}.btn{border:0;border-radius:12px;padding:10px 14px;background:linear-gradient(90deg,#744dff,#e14cb9);color:#fff}.events,.admin-list{padding:0}.events li,.admin-list li{list-style:none;padding:11px 0;border-bottom:1px solid rgba(117,99,190,.35)}.sub{color:var(--muted)}.modal{display:none;position:fixed;inset:0;z-index:50;background:rgba(2,1,12,.75);place-items:center;padding:18px}.modal.show{display:grid}.dialog{width:min(520px,100%);max-height:80vh;overflow:auto;background:#171044;border:1px solid var(--line);border-radius:22px;padding:20px}.dialog input,.dialog textarea{width:100%;margin:7px 0;padding:12px;border-radius:12px;border:1px solid var(--line);background:#0c082b;color:#fff}.toast{display:none;position:fixed;left:50%;bottom:85px;transform:translateX(-50%);z-index:70;background:#20155b;border:1px solid var(--line);padding:11px 16px;border-radius:99px}.bottom{display:none}@media(max-width:760px){.app{display:block}.side{display:none}.main{padding:12px 12px 85px}.top h2{font-size:17px}.hero{grid-template-columns:1fr;text-align:center;padding:24px 17px}.avatar{width:174px;height:174px}.avatar-wrap:before{width:190px;height:190px}.avatar-wrap.leader:before,.avatar-wrap.owner:before{width:202px;height:202px}.grid{grid-template-columns:1fr}.announcement-content{max-width:66%}.announcement .boy{width:170px}.quick{grid-template-columns:repeat(4,1fr)}.bottom{display:grid;grid-template-columns:repeat(3,1fr);position:fixed;left:0;right:0;bottom:0;z-index:30;background:rgba(9,6,31,.94);backdrop-filter:blur(18px);border-top:1px solid var(--line);padding:8px 8px calc(8px + env(safe-area-inset-bottom))}.bottom button{border:0;background:transparent;color:#fff}.bottom span{display:block;font-size:21px}}
-</style></head><body><div class="stars"></div><div class="app"><aside class="side"><div class="logo">🌈 Rainbow Life</div><div class="nav"><button class="active" onclick="go('home')">🏠 個人中心</button><button onclick="go('calendar')">📅 行事曆</button><button onclick="action('frame')">🖼️ 頭像框</button><button onclick="action('fortune')">🔮 今日運勢</button><div class="nav-title">管理中心</div><button class="admin-menu" onclick="go('admin')">🛠️ 管理中心</button><div class="nav-title owner-menu">Rainbow Life 控制台</div><button class="owner-menu" onclick="go('owner')">👑 系統最高權限</button></div></aside><main class="main"><header class="top"><h2>👑 Rainbow Life 個人中心</h2><div class="badge" id="roleBadge">載入中</div></header><section id="home"><div class="version-mark">V2 個人中心輪播修正版</div><section class="card dashboard-carousel" id="leaderDashboard"><div class="carousel-head"><h3>👑 群長儀表板輪播</h3><div class="dots" id="dashDots"></div></div><div id="dashSlides"><div class="slide active"><div class="slide-icon">👑</div><div><small>群長儀表板</small><b>資料載入中</b><div>正在讀取群組資訊</div></div></div></div></section><section class="card hero"><div class="avatar-wrap" id="avatarWrap"><span class="crown" id="crown">👑</span><img class="avatar" id="avatar" alt="LINE 大頭照"></div><div class="hero-info"><div class="eyebrow">RAINBOW COSMOS PROFILE</div><h1 id="name">Rainbow</h1><div class="title-pill">🌈 <span id="title">Rainbow Life</span></div></div></section><section class="card personal-card"><div class="carousel-head"><h3>👤 個人資訊輪播</h3><div class="dots" id="personalDots"></div></div><div id="personalSlides"><div class="personal-slide active"><small>個人資訊</small><div class="personal-value">資料載入中</div><div>正在同步你的最新資料</div></div></div></section><div class="grid"><section class="card announcement"><h3>📢 公告輪播</h3><div class="announcement-content" id="announcement"></div><div class="dots" id="announcementDots"></div><img class="boy" src="/rainbow-static/rainbow_life_boy.png"></section><section class="card"><h3>✨ 每日訊息輪播</h3><div id="dailySlides"></div><div class="dots" id="dailyDots" style="margin-top:12px"></div></section></div><section class="card quick-card"><h3>⚡ 快捷功能</h3><div class="quick"><button onclick="action('frame')"><span>🖼️</span>頭像框</button><button onclick="action('achievement')"><span>🏆</span>成就</button><button onclick="action('fortune')"><span>🔮</span>運勢</button><button onclick="go('calendar')"><span>📅</span>行事曆</button><button onclick="unavailable('商店')"><span>🛍️</span>商店</button><button onclick="unavailable('轉盤')"><span>🎡</span>轉盤</button><button onclick="editProfile()"><span>⚙️</span>設定</button></div></section></section><section id="calendar" class="card" style="display:none"><h3>📅 我的行事曆</h3><button class="btn" onclick="eventModal()">新增提醒</button><ul class="events" id="eventList"></ul></section><section id="admin" class="card admin-zone"><h3>🛠️ 管理中心</h3><div class="quick"><button onclick="adminAction('members')"><span>👥</span>成員管理</button><button onclick="announcementModal()"><span>📢</span>公告管理</button><button onclick="adminAction('frames')"><span>🖼️</span>頭像框</button><button onclick="adminAction('titles')"><span>🏅</span>稱號管理</button><button onclick="adminAction('permissions')"><span>🛡️</span>權限管理</button><button onclick="adminAction('settings')"><span>⚙️</span>系統設定</button><button onclick="adminAction('logs')"><span>📋</span>操作紀錄</button></div><div id="adminResult"></div></section><section id="owner" class="card owner-zone"><h3>👑 Rainbow Life 控制台</h3><div class="quick"><button onclick="ownerAction('overview')"><span>📊</span>系統總覽</button><button onclick="ownerAction('groups')"><span>🌈</span>所有群組</button><button onclick="ownerAction('leaders')"><span>👑</span>群長管理</button><button onclick="ownerAction('global')"><span>📢</span>全站公告</button></div><div id="ownerResult"></div></section></main></div><nav class="bottom"><button onclick="go('home')"><span>🏠</span>首頁</button><button onclick="go('calendar')"><span>📅</span>行事曆</button><button onclick="go(DATA&&DATA.role==='owner'?'owner':(DATA&&DATA.role!=='member'?'admin':'home'))"><span>👤</span>我的</button></nav><div class="modal" id="modal"><div class="dialog" id="dialog"></div></div><div class="toast" id="toast"></div>
+
+.life-push{margin-top:14px;overflow:hidden;background:linear-gradient(145deg,rgba(33,24,92,.94),rgba(85,36,129,.86))}.life-push-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.life-push-head h3{margin:0}.life-push-note{font-size:11px;color:#d8ceff}.life-push-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.life-push-item{min-height:126px;padding:14px;border-radius:18px;border:1px solid rgba(255,255,255,.13);background:rgba(10,7,43,.42);display:flex;flex-direction:column;justify-content:space-between}.life-push-icon{font-size:29px}.life-push-item b{font-size:15px}.life-push-status{font-size:12px;color:#d8ceff;display:flex;align-items:center;gap:6px}.life-push-status:before{content:"";width:7px;height:7px;border-radius:50%;background:#c7b7ff;box-shadow:0 0 12px #b994ff;animation:lifePulse 1.8s ease-in-out infinite}@keyframes lifePulse{50%{opacity:.38;transform:scale(.72)}}@media(max-width:760px){.life-push-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.life-push-item{min-height:116px}}
+</style></head><body><div class="stars"></div><div class="app"><aside class="side"><div class="logo">🌈 Rainbow Life</div><div class="nav"><button class="active" onclick="go('home')">🏠 個人中心</button><button onclick="go('calendar')">📅 行事曆</button><button onclick="action('frame')">🖼️ 頭像框</button><button onclick="action('fortune')">🔮 今日運勢</button><div class="nav-title">管理中心</div><button class="admin-menu" onclick="go('admin')">🛠️ 管理中心</button><div class="nav-title owner-menu">Rainbow Life 控制台</div><button class="owner-menu" onclick="go('owner')">👑 系統最高權限</button></div></aside><main class="main"><header class="top"><h2>👑 Rainbow Life 個人中心</h2><div class="badge" id="roleBadge">載入中</div></header><section id="home"><div class="version-mark">V2 生活推播中心・第五部分</div><section class="card dashboard-carousel" id="leaderDashboard"><div class="carousel-head"><h3>👑 群長儀表板輪播</h3><div class="dots" id="dashDots"></div></div><div id="dashSlides"><div class="slide active"><div class="slide-icon">👑</div><div><small>群長儀表板</small><b>資料載入中</b><div>正在讀取群組資訊</div></div></div></div></section><section class="card hero"><div class="avatar-wrap" id="avatarWrap"><span class="crown" id="crown">👑</span><img class="avatar" id="avatar" alt="LINE 大頭照"></div><div class="hero-info"><div class="eyebrow">RAINBOW COSMOS PROFILE</div><h1 id="name">Rainbow</h1><div class="title-pill">🌈 <span id="title">Rainbow Life</span></div></div></section><section class="card personal-card"><div class="carousel-head"><h3>👤 個人資訊輪播</h3><div class="dots" id="personalDots"></div></div><div id="personalSlides"><div class="personal-slide active"><small>個人資訊</small><div class="personal-value">資料載入中</div><div>正在同步你的最新資料</div></div></div></section><div class="grid"><section class="card announcement"><h3>📢 公告輪播</h3><div class="announcement-content" id="announcement"></div><div class="dots" id="announcementDots"></div><img class="boy" src="/rainbow-static/rainbow_life_boy.png"></section><section class="card"><h3>✨ 每日訊息輪播</h3><div id="dailySlides"></div><div class="dots" id="dailyDots" style="margin-top:12px"></div></section></div><section class="card life-push" id="lifePushCenter"><div class="life-push-head"><h3>🌈 生活推播中心</h3><span class="life-push-note">官方資訊每 5 分鐘更新</span></div><div class="life-push-grid"><article class="life-push-item" id="weatherCard"><div class="life-push-icon">🌦️</div><b>官方天氣</b><div class="life-push-status" id="weatherStatus">資訊更新中！</div><small id="weatherMeta"></small></article><article class="life-push-item" id="familyCard"><div class="life-push-icon">🏪</div><b>全家活動</b><div class="life-push-status" id="familyStatus">資訊更新中！</div><small id="familyMeta"></small></article><article class="life-push-item" id="sevenCard"><div class="life-push-icon">7️⃣</div><b>7-ELEVEN</b><div class="life-push-status" id="sevenStatus">資訊更新中！</div><small id="sevenMeta"></small></article><article class="life-push-item" id="mcdCard"><div class="life-push-icon">🍔</div><b>麥當勞</b><div class="life-push-status" id="mcdStatus">資訊更新中！</div><small id="mcdMeta"></small></article></div></section><section class="card quick-card"><h3>⚡ 快捷功能</h3><div class="quick"><button onclick="action('frame')"><span>🖼️</span>頭像框</button><button onclick="action('achievement')"><span>🏆</span>成就</button><button onclick="action('fortune')"><span>🔮</span>運勢</button><button onclick="go('calendar')"><span>📅</span>行事曆</button><button onclick="unavailable('商店')"><span>🛍️</span>商店</button><button onclick="unavailable('轉盤')"><span>🎡</span>轉盤</button><button onclick="editProfile()"><span>⚙️</span>設定</button></div></section></section><section id="calendar" class="card" style="display:none"><h3>📅 我的行事曆</h3><button class="btn" onclick="eventModal()">新增提醒</button><ul class="events" id="eventList"></ul></section><section id="admin" class="card admin-zone"><h3>🛠️ 管理中心</h3><div class="quick"><button onclick="adminAction('members')"><span>👥</span>成員管理</button><button onclick="announcementModal()"><span>📢</span>公告管理</button><button onclick="adminAction('frames')"><span>🖼️</span>頭像框</button><button onclick="adminAction('titles')"><span>🏅</span>稱號管理</button><button onclick="adminAction('permissions')"><span>🛡️</span>權限管理</button><button onclick="adminAction('settings')"><span>⚙️</span>系統設定</button><button onclick="adminAction('logs')"><span>📋</span>操作紀錄</button></div><div id="adminResult"></div></section><section id="owner" class="card owner-zone"><h3>👑 Rainbow Life 控制台</h3><div class="quick"><button onclick="ownerAction('overview')"><span>📊</span>系統總覽</button><button onclick="ownerAction('groups')"><span>🌈</span>所有群組</button><button onclick="ownerAction('leaders')"><span>👑</span>群長管理</button><button onclick="ownerAction('global')"><span>📢</span>全站公告</button></div><div id="ownerResult"></div></section></main></div><nav class="bottom"><button onclick="go('home')"><span>🏠</span>首頁</button><button onclick="go('calendar')"><span>📅</span>行事曆</button><button onclick="go(DATA&&DATA.role==='owner'?'owner':(DATA&&DATA.role!=='member'?'admin':'home'))"><span>👤</span>我的</button></nav><div class="modal" id="modal"><div class="dialog" id="dialog"></div></div><div class="toast" id="toast"></div>
 <script>
-let DATA=null,timers=[];const Q=location.search;function api(path,opt={}){return fetch(path+Q,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}}).then(async r=>{let j=await r.json();if(!r.ok)throw new Error(j.detail||'操作失敗');return j})}function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}function toast(t){let e=document.getElementById('toast');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',2200)}function unavailable(n){toast(n+'功能尚未開放')}function closeModal(){document.getElementById('modal').classList.remove('show')}function go(id){['home','calendar','admin','owner'].forEach(x=>document.getElementById(x).style.display=x===id?'block':'none');if(id==='admin')loadAdmin();if(id==='owner')ownerAction('overview')}function carousel(slides,dots,interval=4500){if(!slides.length)return;let i=0;function show(n){slides.forEach((e,k)=>e.classList.toggle('active',k===n));dots.forEach((e,k)=>e.classList.toggle('active',k===n))}show(0);if(slides.length>1)timers.push(setInterval(()=>{i=(i+1)%slides.length;show(i)},interval))}function makeDots(id,n){let e=document.getElementById(id);e.innerHTML=Array.from({length:n},()=>'<i class="dot"></i>').join('');return [...e.children]}function compact(n){n=Number(n)||0;return n>=1e15?(n/1e15).toFixed(2)+'Q':n>=1e12?(n/1e12).toFixed(2)+'T':n>=1e9?(n/1e9).toFixed(2)+'B':n>=1e6?(n/1e6).toFixed(2)+'M':n.toLocaleString()}async function action(name){try{let j=await api('/api/rainbow/feature/'+name,{method:name==='fortune'?'POST':'GET'});showFeature(name,j);if(name==='fortune'){DATA=await api('/api/rainbow/me');renderPersonal();renderDaily()}}catch(e){toast(e.message)}}function showFeature(name,j){let h='<h3>'+esc(j.title||name)+'</h3>';if(j.message)h+='<p style="white-space:pre-wrap">'+esc(j.message)+'</p>';if(j.items)h+='<ul class="admin-list">'+j.items.map(x=>'<li><b>'+esc(x.name||x.title_name||x.item_name)+'</b>'+(x.description?'<br><span class="sub">'+esc(x.description)+'</span>':'')+(name==='frame'?'<br><button class="btn" onclick="equipFrame('+JSON.stringify(x.frame_key)+')">套用</button>':'')+'</li>').join('')+'</ul>';document.getElementById('dialog').innerHTML=h+'<button class="btn" onclick="closeModal()">關閉</button>';document.getElementById('modal').classList.add('show')}async function equipFrame(n){try{let j=await api('/api/rainbow/frame/equip',{method:'POST',body:JSON.stringify({frame_key:n})});toast(j.message);closeModal()}catch(e){toast(e.message)}}function roleText(r){return {owner:'👑 Rainbow Life Owner',leader:'👑 群長',admin:'🛡️ 管理員',member:'👤 一般成員'}[r]||r}function renderPersonal(){let pct=Math.min(100,Math.max(1,Math.round(DATA.level_exp/Math.max(1,DATA.exp_needed)*100)));let items=[['⭐ 等級與經驗','LV.'+DATA.level,'<div class="level-row"><small>目前 '+compact(DATA.level_exp)+'</small><small>需要 '+compact(DATA.exp_needed)+'</small></div><div class="progress"><i style="width:'+pct+'%"></i></div>'],['💎 VIP 狀態',DATA.vip?(DATA.vip_until||'永久 VIP'):'一般會員','成就達標後可永久解鎖 VIP'],['🏆 成就進度',DATA.achievement_stage||'持續累積中','完成條件後會自動升級'],['🌈 目前稱號',DATA.title||'彩虹旅人','頭像框：'+(DATA.equipped_frame||'rainbow_basic')],['🎂 生日資訊',DATA.birthday||'尚未設定','連續簽到 '+DATA.streak+' 天'],['🔮 今日運勢',DATA.fortune||'尚未占卜',esc(DATA.fortune_message||'點選快捷鍵查看今日運勢')],['💬 今日活躍',DATA.today_messages+' 則訊息','貼圖 '+DATA.today_stickers+' 張']];let box=document.getElementById('personalSlides');box.innerHTML=items.map(x=>'<div class="personal-slide"><small>'+x[0]+'</small><div class="personal-value">'+esc(x[1])+'</div><div>'+x[2]+'</div></div>').join('');carousel([...box.children],makeDots('personalDots',items.length),4300)}async function renderDashboard(){if(DATA.role==='member')return;document.getElementById('leaderDashboard').classList.add('show');let d={members:'--',vip:'--',admins:'--',today_messages:DATA.today_messages};try{d=await api('/api/rainbow/admin/overview')}catch(e){}let items=[['👥','群組成員',d.members+' 人','目前群組成員總數'],['🤖','機器人狀態','正常運行','Rainbow Life 服務正常'],['💬','今日聊天',d.today_messages+' 則','群組今日活躍統計'],['💎','VIP 成員',d.vip+' 人','已解鎖 VIP 的成員'],['🛡️','管理團隊',d.admins+' 人','群長與管理員'],['🎂','生日提醒',DATA.birthday==='尚未設定'?'尚未設定':'已設定','個人生日：'+DATA.birthday],['📢','最新公告',(DATA.announcements||[]).length?'有新公告':'目前無公告','向左輪播查看公告內容']];let box=document.getElementById('dashSlides');box.innerHTML=items.map(x=>'<div class="slide"><div class="slide-icon">'+x[0]+'</div><div><small>'+x[1]+'</small><b>'+esc(x[2])+'</b><div>'+esc(x[3])+'</div></div></div>').join('');document.getElementById('leaderDashboard').classList.add('show');carousel([...box.children],makeDots('dashDots',items.length),4600)}function renderAnnouncements(){let a=(DATA.announcements||[]).filter(x=>!/(轉盤|輪盤|抽獎)/.test((x.title||'')+(x.content||'')));if(!a.length)a=[{title:'全新主題上線',content:'歡迎回到 Rainbow Life 個人中心。'}];let box=document.getElementById('announcement');box.innerHTML=a.map(x=>'<div class="personal-slide"><h2>'+esc(x.title)+'</h2><p>'+esc(x.content)+'</p></div>').join('');carousel([...box.children],makeDots('announcementDots',a.length),5200)}function renderDaily(){let items=[['🔮 今日運勢',DATA.fortune||'尚未占卜'],['💬 今日聊天',DATA.today_messages+' 則'],['🖼️ 今日貼圖',DATA.today_stickers+' 張'],['🔥 連續簽到',DATA.streak+' 天'],['🎂 生日資訊',DATA.birthday||'尚未設定']];let box=document.getElementById('dailySlides');box.innerHTML=items.map(x=>'<div class="daily-slide"><small>'+x[0]+'</small><b>'+esc(x[1])+'</b></div>').join('');carousel([...box.children],makeDots('dailyDots',items.length),4100)}async function load(){try{DATA=await api('/api/rainbow/me');document.getElementById('name').textContent=DATA.name;document.getElementById('title').textContent=DATA.title;document.getElementById('roleBadge').textContent=roleText(DATA.role);document.getElementById('avatar').src=DATA.picture_url||'/rainbow-static/rainbow_life_boy.png';document.getElementById('avatarWrap').classList.add(DATA.role);if(DATA.role==='member'){document.querySelectorAll('.admin-menu,.owner-menu').forEach(e=>e.style.display='none');document.getElementById('crown').style.display='none'}else{document.getElementById('admin').classList.add('show')}if(DATA.role==='owner'){document.querySelectorAll('.owner-menu').forEach(e=>e.style.display='block');document.getElementById('owner').classList.add('show')}try{renderDashboard()}catch(e){console.error('dashboard',e)}try{renderPersonal()}catch(e){console.error('personal',e)}try{renderAnnouncements()}catch(e){console.error('announcement',e)}try{renderDaily()}catch(e){console.error('daily',e)}try{renderEvents()}catch(e){console.error('events',e)}}catch(e){document.body.innerHTML='<div style="padding:40px;color:white;text-align:center"><h2>無法開啟 Rainbow Life</h2><p>'+esc(e.message)+'</p><p>請回到 LINE 群組重新點選「個人中心」。</p></div>'}}function renderEvents(){document.getElementById('eventList').innerHTML=(DATA.events||[]).map(e=>'<li><b>'+esc(e.event_date)+'</b>　'+esc(e.title)+'<br><span class="sub">'+esc(e.note)+'</span></li>').join('')||'<li>目前沒有提醒事項</li>'}function eventModal(){document.getElementById('dialog').innerHTML='<h3>新增提醒</h3><input id="ed" type="date"><input id="et" placeholder="提醒標題"><textarea id="en" placeholder="備註"></textarea><button class="btn" onclick="saveEvent()">儲存</button> <button class="btn" onclick="closeModal()">取消</button>';document.getElementById('modal').classList.add('show')}async function saveEvent(){try{await api('/api/rainbow/calendar',{method:'POST',body:JSON.stringify({event_date:ed.value,title:et.value,note:en.value})});closeModal();toast('已儲存提醒');DATA=await api('/api/rainbow/me');renderEvents()}catch(e){toast(e.message)}}function editProfile(){document.getElementById('dialog').innerHTML='<h3>個人設定</h3><input id="bio" placeholder="自我介紹" value="'+esc(DATA.bio)+'"><input id="region" placeholder="地區" value="'+esc(DATA.region)+'"><button class="btn" onclick="saveProfile()">儲存</button> <button class="btn" onclick="closeModal()">取消</button>';document.getElementById('modal').classList.add('show')}async function saveProfile(){try{await api('/api/rainbow/profile',{method:'POST',body:JSON.stringify({bio:bio.value,region:region.value})});closeModal();toast('個人設定已儲存')}catch(e){toast(e.message)}}function announcementModal(){document.getElementById('dialog').innerHTML='<h3>新增群組公告</h3><input id="at" placeholder="公告標題"><textarea id="ac" placeholder="公告內容"></textarea><button class="btn" onclick="saveAnnouncement()">發布</button> <button class="btn" onclick="closeModal()">取消</button>';document.getElementById('modal').classList.add('show')}async function saveAnnouncement(){try{await api('/api/rainbow/admin/announcement',{method:'POST',body:JSON.stringify({title:at.value,content:ac.value})});closeModal();toast('公告已發布');DATA=await api('/api/rainbow/me');renderAnnouncements()}catch(e){toast(e.message)}}async function loadAdmin(){if(!DATA||DATA.role==='member')return;let j=await api('/api/rainbow/admin/overview');document.getElementById('adminResult').innerHTML='<ul class="admin-list"><li>👥 成員總數：<b>'+j.members+'</b></li><li>💎 VIP：<b>'+j.vip+'</b></li><li>🛡️ 管理人員：<b>'+j.admins+'</b></li><li>💬 今日聊天：<b>'+j.today_messages+'</b></li></ul>'}async function adminAction(k){if(k==='members'){let j=await api('/api/rainbow/admin/members');document.getElementById('adminResult').innerHTML='<ul class="admin-list">'+j.items.map(x=>'<li>'+esc(x.name)+'　Lv.'+x.level+'</li>').join('')+'</ul>'}else{let j=await api('/api/rainbow/admin/'+k);document.getElementById('adminResult').innerHTML='<pre style="white-space:pre-wrap">'+esc(JSON.stringify(j,null,2))+'</pre>'}}async function ownerAction(k){if(!DATA||DATA.role!=='owner')return;let j=await api('/api/rainbow/owner/'+k);document.getElementById('ownerResult').innerHTML='<pre style="white-space:pre-wrap">'+esc(JSON.stringify(j,null,2))+'</pre>'}load();
+let DATA=null,timers=[];const Q=location.search;function api(path,opt={}){return fetch(path+Q,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}}).then(async r=>{let j=await r.json();if(!r.ok)throw new Error(j.detail||'操作失敗');return j})}function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}function toast(t){let e=document.getElementById('toast');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',2200)}function unavailable(n){toast(n+'功能尚未開放')}function closeModal(){document.getElementById('modal').classList.remove('show')}function go(id){['home','calendar','admin','owner'].forEach(x=>document.getElementById(x).style.display=x===id?'block':'none');if(id==='admin')loadAdmin();if(id==='owner')ownerAction('overview')}function carousel(slides,dots,interval=4500){if(!slides.length)return;let i=0;function show(n){slides.forEach((e,k)=>e.classList.toggle('active',k===n));dots.forEach((e,k)=>e.classList.toggle('active',k===n))}show(0);if(slides.length>1)timers.push(setInterval(()=>{i=(i+1)%slides.length;show(i)},interval))}function makeDots(id,n){let e=document.getElementById(id);e.innerHTML=Array.from({length:n},()=>'<i class="dot"></i>').join('');return [...e.children]}function compact(n){n=Number(n)||0;return n>=1e15?(n/1e15).toFixed(2)+'Q':n>=1e12?(n/1e12).toFixed(2)+'T':n>=1e9?(n/1e9).toFixed(2)+'B':n>=1e6?(n/1e6).toFixed(2)+'M':n.toLocaleString()}async function action(name){try{let j=await api('/api/rainbow/feature/'+name,{method:name==='fortune'?'POST':'GET'});showFeature(name,j);if(name==='fortune'){DATA=await api('/api/rainbow/me');renderPersonal();renderDaily()}}catch(e){toast(e.message)}}function showFeature(name,j){let h='<h3>'+esc(j.title||name)+'</h3>';if(j.message)h+='<p style="white-space:pre-wrap">'+esc(j.message)+'</p>';if(j.items)h+='<ul class="admin-list">'+j.items.map(x=>'<li><b>'+esc(x.name||x.title_name||x.item_name)+'</b>'+(x.description?'<br><span class="sub">'+esc(x.description)+'</span>':'')+(name==='frame'?'<br><button class="btn" onclick="equipFrame('+JSON.stringify(x.frame_key)+')">套用</button>':'')+'</li>').join('')+'</ul>';document.getElementById('dialog').innerHTML=h+'<button class="btn" onclick="closeModal()">關閉</button>';document.getElementById('modal').classList.add('show')}async function equipFrame(n){try{let j=await api('/api/rainbow/frame/equip',{method:'POST',body:JSON.stringify({frame_key:n})});toast(j.message);closeModal()}catch(e){toast(e.message)}}function roleText(r){return {owner:'👑 Rainbow Life Owner',leader:'👑 群長',admin:'🛡️ 管理員',member:'👤 一般成員'}[r]||r}function renderPersonal(){let pct=Math.min(100,Math.max(1,Math.round(DATA.level_exp/Math.max(1,DATA.exp_needed)*100)));let items=[['⭐ 等級與經驗','LV.'+DATA.level,'<div class="level-row"><small>目前 '+compact(DATA.level_exp)+'</small><small>需要 '+compact(DATA.exp_needed)+'</small></div><div class="progress"><i style="width:'+pct+'%"></i></div>'],['💎 VIP 狀態',DATA.vip?(DATA.vip_until||'永久 VIP'):'一般會員','成就達標後可永久解鎖 VIP'],['🏆 成就進度',DATA.achievement_stage||'持續累積中','完成條件後會自動升級'],['🌈 目前稱號',DATA.title||'彩虹旅人','頭像框：'+(DATA.equipped_frame||'rainbow_basic')],['🎂 生日資訊',DATA.birthday||'尚未設定','連續簽到 '+DATA.streak+' 天'],['🔮 今日運勢',DATA.fortune||'尚未占卜',esc(DATA.fortune_message||'點選快捷鍵查看今日運勢')],['💬 今日活躍',DATA.today_messages+' 則訊息','貼圖 '+DATA.today_stickers+' 張']];let box=document.getElementById('personalSlides');box.innerHTML=items.map(x=>'<div class="personal-slide"><small>'+x[0]+'</small><div class="personal-value">'+esc(x[1])+'</div><div>'+x[2]+'</div></div>').join('');carousel([...box.children],makeDots('personalDots',items.length),4300)}async function renderDashboard(){if(DATA.role==='member')return;document.getElementById('leaderDashboard').classList.add('show');let d={members:'--',vip:'--',admins:'--',today_messages:DATA.today_messages};try{d=await api('/api/rainbow/admin/overview')}catch(e){}let items=[['👥','群組成員',d.members+' 人','目前群組成員總數'],['🤖','機器人狀態','正常運行','Rainbow Life 服務正常'],['💬','今日聊天',d.today_messages+' 則','群組今日活躍統計'],['💎','VIP 成員',d.vip+' 人','已解鎖 VIP 的成員'],['🛡️','管理團隊',d.admins+' 人','群長與管理員'],['🎂','生日提醒',DATA.birthday==='尚未設定'?'尚未設定':'已設定','個人生日：'+DATA.birthday],['📢','最新公告',(DATA.announcements||[]).length?'有新公告':'目前無公告','向左輪播查看公告內容']];let box=document.getElementById('dashSlides');box.innerHTML=items.map(x=>'<div class="slide"><div class="slide-icon">'+x[0]+'</div><div><small>'+x[1]+'</small><b>'+esc(x[2])+'</b><div>'+esc(x[3])+'</div></div></div>').join('');document.getElementById('leaderDashboard').classList.add('show');carousel([...box.children],makeDots('dashDots',items.length),4600)}function renderAnnouncements(){let a=(DATA.announcements||[]).filter(x=>!/(轉盤|輪盤|抽獎)/.test((x.title||'')+(x.content||'')));if(!a.length)a=[{title:'全新主題上線',content:'歡迎回到 Rainbow Life 個人中心。'}];let box=document.getElementById('announcement');box.innerHTML=a.map(x=>'<div class="personal-slide"><h2>'+esc(x.title)+'</h2><p>'+esc(x.content)+'</p></div>').join('');carousel([...box.children],makeDots('announcementDots',a.length),5200)}function renderDaily(){let items=[['🔮 今日運勢',DATA.fortune||'尚未占卜'],['💬 今日聊天',DATA.today_messages+' 則'],['🖼️ 今日貼圖',DATA.today_stickers+' 張'],['🔥 連續簽到',DATA.streak+' 天'],['🎂 生日資訊',DATA.birthday||'尚未設定']];let box=document.getElementById('dailySlides');box.innerHTML=items.map(x=>'<div class="daily-slide"><small>'+x[0]+'</small><b>'+esc(x[1])+'</b></div>').join('');carousel([...box.children],makeDots('dailyDots',items.length),4100)}async function load(){try{DATA=await api('/api/rainbow/me');document.getElementById('name').textContent=DATA.name;document.getElementById('title').textContent=DATA.title;document.getElementById('roleBadge').textContent=roleText(DATA.role);document.getElementById('avatar').src=DATA.picture_url||'/rainbow-static/rainbow_life_boy.png';document.getElementById('avatarWrap').classList.add(DATA.role);if(DATA.role==='member'){document.querySelectorAll('.admin-menu,.owner-menu').forEach(e=>e.style.display='none');document.getElementById('crown').style.display='none'}else{document.getElementById('admin').classList.add('show')}if(DATA.role==='owner'){document.querySelectorAll('.owner-menu').forEach(e=>e.style.display='block');document.getElementById('owner').classList.add('show')}try{renderDashboard()}catch(e){console.error('dashboard',e)}try{renderPersonal()}catch(e){console.error('personal',e)}try{renderAnnouncements()}catch(e){console.error('announcement',e)}try{renderDaily()}catch(e){console.error('daily',e)}try{renderEvents()}catch(e){console.error('events',e)}}catch(e){document.body.innerHTML='<div style="padding:40px;color:white;text-align:center"><h2>無法開啟 Rainbow Life</h2><p>'+esc(e.message)+'</p><p>請回到 LINE 群組重新點選「個人中心」。</p></div>'}}function renderEvents(){document.getElementById('eventList').innerHTML=(DATA.events||[]).map(e=>'<li><b>'+esc(e.event_date)+'</b>　'+esc(e.title)+'<br><span class="sub">'+esc(e.note)+'</span></li>').join('')||'<li>目前沒有提醒事項</li>'}function eventModal(){document.getElementById('dialog').innerHTML='<h3>新增提醒</h3><input id="ed" type="date"><input id="et" placeholder="提醒標題"><textarea id="en" placeholder="備註"></textarea><button class="btn" onclick="saveEvent()">儲存</button> <button class="btn" onclick="closeModal()">取消</button>';document.getElementById('modal').classList.add('show')}async function saveEvent(){try{await api('/api/rainbow/calendar',{method:'POST',body:JSON.stringify({event_date:ed.value,title:et.value,note:en.value})});closeModal();toast('已儲存提醒');DATA=await api('/api/rainbow/me');renderEvents()}catch(e){toast(e.message)}}function editProfile(){document.getElementById('dialog').innerHTML='<h3>個人設定</h3><input id="bio" placeholder="自我介紹" value="'+esc(DATA.bio)+'"><input id="region" placeholder="地區" value="'+esc(DATA.region)+'"><button class="btn" onclick="saveProfile()">儲存</button> <button class="btn" onclick="closeModal()">取消</button>';document.getElementById('modal').classList.add('show')}async function saveProfile(){try{await api('/api/rainbow/profile',{method:'POST',body:JSON.stringify({bio:bio.value,region:region.value})});closeModal();toast('個人設定已儲存')}catch(e){toast(e.message)}}function announcementModal(){document.getElementById('dialog').innerHTML='<h3>新增群組公告</h3><input id="at" placeholder="公告標題"><textarea id="ac" placeholder="公告內容"></textarea><button class="btn" onclick="saveAnnouncement()">發布</button> <button class="btn" onclick="closeModal()">取消</button>';document.getElementById('modal').classList.add('show')}async function saveAnnouncement(){try{await api('/api/rainbow/admin/announcement',{method:'POST',body:JSON.stringify({title:at.value,content:ac.value})});closeModal();toast('公告已發布');DATA=await api('/api/rainbow/me');renderAnnouncements()}catch(e){toast(e.message)}}async function loadAdmin(){if(!DATA||DATA.role==='member')return;let j=await api('/api/rainbow/admin/overview');document.getElementById('adminResult').innerHTML='<ul class="admin-list"><li>👥 成員總數：<b>'+j.members+'</b></li><li>💎 VIP：<b>'+j.vip+'</b></li><li>🛡️ 管理人員：<b>'+j.admins+'</b></li><li>💬 今日聊天：<b>'+j.today_messages+'</b></li></ul>'}async function adminAction(k){if(k==='members'){let j=await api('/api/rainbow/admin/members');document.getElementById('adminResult').innerHTML='<ul class="admin-list">'+j.items.map(x=>'<li>'+esc(x.name)+'　Lv.'+x.level+'</li>').join('')+'</ul>'}else{let j=await api('/api/rainbow/admin/'+k);document.getElementById('adminResult').innerHTML='<pre style="white-space:pre-wrap">'+esc(JSON.stringify(j,null,2))+'</pre>'}}async function ownerAction(k){if(!DATA||DATA.role!=='owner')return;let j=await api('/api/rainbow/owner/'+k);document.getElementById('ownerResult').innerHTML='<pre style="white-space:pre-wrap">'+esc(JSON.stringify(j,null,2))+'</pre>'}async function loadWeather(){let status=document.getElementById('weatherStatus'),meta=document.getElementById('weatherMeta');if(!status)return;try{let w=await api('/api/rainbow/weather');let parts=[];if(w.temperature!==null&&w.temperature!==undefined)parts.push(w.temperature+'°C');if(w.weather)parts.push(w.weather);if(w.rain_probability!==null&&w.rain_probability!==undefined)parts.push('降雨 '+w.rain_probability+'%');status.innerHTML='<strong>'+esc(parts.join('　')||'資訊更新中！')+'</strong>'+(w.apparent_temperature!==null&&w.apparent_temperature!==undefined?'<br>體感 '+esc(w.apparent_temperature)+'°C':'')+(w.uvi!==null&&w.uvi!==undefined?'<br>紫外線 '+esc(w.uvi):'');meta.textContent=(w.region||'')+'｜更新 '+(w.updated_at||'');}catch(e){status.textContent='資訊更新中！';meta.textContent='下一次將自動重新取得';}}async function loadFamily(){let status=document.getElementById('familyStatus'),meta=document.getElementById('familyMeta');if(!status)return;try{let f=await api('/api/rainbow/familymart');status.innerHTML='<strong>'+esc(f.title||'資訊更新中！')+'</strong>'+(f.period?'<br>'+esc(f.period):'');meta.innerHTML='官方活動｜更新 '+esc(f.updated_at||'')+(f.url?'｜<a href="'+esc(f.url)+'" target="_blank" rel="noopener">查看活動</a>':'');}catch(e){status.textContent='資訊更新中！';meta.textContent='下一次將自動重新取得';}}async function loadSeven(){let status=document.getElementById('sevenStatus'),meta=document.getElementById('sevenMeta');if(!status)return;try{let f=await api('/api/rainbow/seven');status.innerHTML='<strong>'+esc(f.title||'資訊更新中！')+'</strong>'+(f.period?'<br>'+esc(f.period):'');meta.innerHTML='官方活動｜更新 '+esc(f.updated_at||'')+(f.url?'｜<a href="'+esc(f.url)+'" target="_blank" rel="noopener">查看活動</a>':'');}catch(e){status.textContent='資訊更新中！';meta.textContent='下一次將自動重新取得';}}async function loadMcd(){let status=document.getElementById('mcdStatus'),meta=document.getElementById('mcdMeta');if(!status)return;try{let f=await api('/api/rainbow/mcdonalds');status.innerHTML='<strong>'+esc(f.title||'資訊更新中！')+'</strong>'+(f.period?'<br>'+esc(f.period):'');meta.innerHTML='官方活動｜更新 '+esc(f.updated_at||'')+(f.url?'｜<a href="'+esc(f.url)+'" target="_blank" rel="noopener">查看活動</a>':'');}catch(e){status.textContent='資訊更新中！';meta.textContent='下一次將自動重新取得';}}setInterval(loadWeather,300000);setInterval(loadFamily,300000);setInterval(loadSeven,300000);setInterval(loadMcd,300000);
+load();loadWeather();loadFamily();loadSeven();loadMcd();
 </script></body></html>'''
+
+def _profile_region(group_id, user_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as c:
+            c.execute('SELECT region FROM web_profile_settings WHERE group_id=%s AND user_id=%s', (group_id, user_id))
+            row = c.fetchone() or {}
+            return str(row.get('region') or '').strip()
+    finally:
+        conn.close()
+
+
+def _normalize_region(region):
+    text = (region or '').replace('台', '臺').replace(' ', '')
+    city = ''
+    district = ''
+    for suffix in ('市', '縣'):
+        idx = text.find(suffix)
+        if idx >= 0:
+            city = text[:idx + 1]
+            district = text[idx + 1:]
+            break
+    if not city:
+        city = '臺中市'
+        district = text or '太平區'
+    if district and not district.endswith(('區', '鄉', '鎮', '市')):
+        district += '區'
+    return city, district or '太平區'
+
+
+def _first_value(items, *keys):
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        for key in keys:
+            val = item.get(key)
+            if val not in (None, ''):
+                return val
+    return None
+
+
+def _weather_elements(location):
+    result = {}
+    for element in location.get('WeatherElement') or location.get('weatherElement') or []:
+        name = str(element.get('ElementName') or element.get('elementName') or '')
+        times = element.get('Time') or element.get('time') or []
+        first = times[0] if times else {}
+        values = first.get('ElementValue') or first.get('elementValue') or []
+        value = _first_value(values, 'Temperature', 'ApparentTemperature', 'ProbabilityOfPrecipitation', 'Weather', 'UVIndex', 'Value')
+        if value is None:
+            value = _first_value(values, 'temperature', 'apparentTemperature', 'probabilityOfPrecipitation', 'weather', 'uvIndex', 'value')
+        result[name] = value
+    return result
+
+
+def _fetch_cwa_weather(region):
+    api_key = (os.getenv('CWA_API_KEY') or os.getenv('CWA_AUTHORIZATION') or '').strip()
+    if not api_key:
+        raise RuntimeError('CWA_API_KEY 未設定')
+    city, district = _normalize_region(region)
+    params = urlencode({'Authorization': api_key, 'format': 'JSON'})
+    url = f'https://opendata.cwa.gov.tw/api/v1/rest/datastore/{CWA_DATASET_ID}?{params}'
+    req = UrlRequest(url, headers={'User-Agent': 'Rainbow-Life/2.0'})
+    with urlopen(req, timeout=18) as response:
+        payload = json.loads(response.read().decode('utf-8'))
+    records = payload.get('records') or payload.get('Records') or {}
+    groups = records.get('Locations') or records.get('locations') or []
+    matched = None
+    for group in groups:
+        group_name = str(group.get('LocationsName') or group.get('locationsName') or '')
+        if city and city not in group_name and group_name not in city:
+            continue
+        for location in group.get('Location') or group.get('location') or []:
+            name = str(location.get('LocationName') or location.get('locationName') or '')
+            if name == district or district in name or name in district:
+                matched = location
+                break
+        if matched:
+            break
+    if not matched:
+        raise RuntimeError('找不到個人設定地區')
+    elements = _weather_elements(matched)
+    temperature = elements.get('溫度') or elements.get('T')
+    apparent = elements.get('體感溫度') or elements.get('AT')
+    rain = elements.get('3小時降雨機率') or elements.get('6小時降雨機率') or elements.get('12小時降雨機率') or elements.get('PoP6h') or elements.get('PoP12h')
+    weather = elements.get('天氣現象') or elements.get('Wx') or '天氣資訊'
+    uvi = elements.get('紫外線指數') or elements.get('UVI')
+    now = datetime.datetime.now(TZ)
+    return {
+        'ok': True,
+        'region': f'{city}{district}',
+        'weather': str(weather),
+        'temperature': temperature,
+        'apparent_temperature': apparent,
+        'rain_probability': rain,
+        'uvi': uvi,
+        'updated_at': now.strftime('%Y/%m/%d %H:%M'),
+        'refresh_seconds': WEATHER_CACHE_SECONDS,
+        'source': '中央氣象署'
+    }
+
+
+def _cached_weather(region):
+    key = region or '臺中市太平區'
+    now = time.time()
+    with _WEATHER_LOCK:
+        cached = _WEATHER_CACHE.get(key)
+        if cached and now - cached['time'] < WEATHER_CACHE_SECONDS:
+            return cached['data']
+    data = _fetch_cwa_weather(key)
+    with _WEATHER_LOCK:
+        _WEATHER_CACHE[key] = {'time': now, 'data': data}
+    return data
+
+
+
+class _FamilyTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._skip = 0
+        self.tokens = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in ('script', 'style', 'noscript'):
+            self._skip += 1
+
+    def handle_endtag(self, tag):
+        if tag.lower() in ('script', 'style', 'noscript') and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data):
+        if self._skip:
+            return
+        text = re.sub(r'\s+', ' ', html.unescape(data or '')).strip()
+        if text:
+            self.tokens.append(text)
+
+
+def _fetch_familymart_event():
+    req = UrlRequest(FAMILY_EVENT_URL, headers={
+        'User-Agent': 'Mozilla/5.0 (compatible; Rainbow-Life/2.0; +https://www.family.com.tw/)',
+        'Accept-Language': 'zh-TW,zh;q=0.9'
+    })
+    with urlopen(req, timeout=18) as response:
+        raw = response.read()
+        charset = response.headers.get_content_charset() or 'utf-8'
+    text = raw.decode(charset, errors='replace')
+    parser = _FamilyTextParser()
+    parser.feed(text)
+    tokens = [t for t in parser.tokens if t not in ('Image', '最新活動', '全家便利商店-最新活動')]
+    date_re = re.compile(r'^(?:\d{4}/\d{2}/\d{2}\s*-\s*\d{4}/\d{2}/\d{2}|長期活動)$')
+    categories = {'主題活動','抽獎活動','支付優惠','便利快訊','會員優惠','鮮食優惠','商品優惠','最新活動'}
+    title = ''
+    period = ''
+    for idx, token in enumerate(tokens):
+        if not date_re.match(token):
+            continue
+        period = token
+        for candidate in tokens[idx + 1:idx + 8]:
+            if candidate in categories or date_re.match(candidate) or len(candidate) < 4:
+                continue
+            title = candidate
+            break
+        if title:
+            break
+    if not title:
+        raise RuntimeError('暫時找不到全家最新活動')
+    now = datetime.datetime.now(TZ)
+    return {
+        'ok': True,
+        'title': title[:120],
+        'period': period,
+        'url': FAMILY_EVENT_URL,
+        'updated_at': now.strftime('%Y/%m/%d %H:%M'),
+        'refresh_seconds': FAMILY_CACHE_SECONDS,
+        'source': '全家便利商店官方網站'
+    }
+
+
+def _cached_familymart_event():
+    now = time.time()
+    with _FAMILY_LOCK:
+        cached = _FAMILY_CACHE.get('latest')
+        if cached and now - cached['time'] < FAMILY_CACHE_SECONDS:
+            return cached['data']
+    data = _fetch_familymart_event()
+    with _FAMILY_LOCK:
+        _FAMILY_CACHE['latest'] = {'time': now, 'data': data}
+    return data
+
+
+
+def _fetch_seven_event():
+    req = UrlRequest(SEVEN_EVENT_URL, headers={
+        'User-Agent': 'Mozilla/5.0 (compatible; Rainbow-Life/2.0; +https://www.7-11.com.tw/)',
+        'Accept-Language': 'zh-TW,zh;q=0.9'
+    })
+    with urlopen(req, timeout=18) as response:
+        raw = response.read()
+        charset = response.headers.get_content_charset() or 'utf-8'
+    text = raw.decode(charset, errors='replace')
+    parser = _FamilyTextParser()
+    parser.feed(text)
+    tokens = []
+    ignored = {
+        'Image','本期優惠','主題活動','精選美味','嚴選商品','便利生活',
+        'CITY CAFE','CITY TEA','小七食堂','優惠','總覽','繁體中文',
+        '產品與服務','聯合服務中心','專線電話：0800-008711'
+    }
+    for token in parser.tokens:
+        token = re.sub(r'\s+', ' ', token).strip()
+        if not token or token in ignored or len(token) < 4:
+            continue
+        if '食品業登錄字號' in token or token.startswith('Copyright'):
+            continue
+        tokens.append(token)
+    title = ''
+    period = ''
+    date_re = re.compile(r'(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}).{0,12}(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2})')
+    for idx, token in enumerate(tokens):
+        if date_re.search(token):
+            period = date_re.search(token).group(0)
+            for candidate in tokens[max(0, idx - 4):idx + 5]:
+                if candidate == token or date_re.search(candidate) or len(candidate) > 120:
+                    continue
+                if any(word in candidate for word in ('活動','優惠','新品','集點','咖啡','CITY')):
+                    title = candidate
+                    break
+            if title:
+                break
+    if not title:
+        for candidate in tokens:
+            if len(candidate) <= 120 and any(word in candidate for word in ('活動','優惠','新品','集點')):
+                title = candidate
+                break
+    if not title:
+        title = '查看 7-ELEVEN 本期官方優惠'
+    now = datetime.datetime.now(TZ)
+    return {
+        'ok': True,
+        'title': title[:120],
+        'period': period[:80],
+        'url': SEVEN_EVENT_URL,
+        'updated_at': now.strftime('%Y/%m/%d %H:%M'),
+        'refresh_seconds': SEVEN_CACHE_SECONDS,
+        'source': '7-ELEVEN 台灣官方網站'
+    }
+
+
+def _cached_seven_event():
+    now = time.time()
+    with _SEVEN_LOCK:
+        cached = _SEVEN_CACHE.get('latest')
+        if cached and now - cached['time'] < SEVEN_CACHE_SECONDS:
+            return cached['data']
+    data = _fetch_seven_event()
+    with _SEVEN_LOCK:
+        _SEVEN_CACHE['latest'] = {'time': now, 'data': data}
+    return data
+
+def _fetch_mcdonalds_event():
+    req = UrlRequest(MCD_EVENT_URL, headers={
+        'User-Agent': 'Mozilla/5.0 (compatible; Rainbow-Life/2.0; +https://www.mcdonalds.com/tw/zh-tw.html)',
+        'Accept-Language': 'zh-TW,zh;q=0.9'
+    })
+    with urlopen(req, timeout=18) as response:
+        raw = response.read()
+        charset = response.headers.get_content_charset() or 'utf-8'
+    text = raw.decode(charset, errors='replace')
+    parser = _FamilyTextParser()
+    parser.feed(text)
+    tokens = []
+    ignored = {'了解更多','瞭解詳情','馬上探索、馬上行動！','麥當勞台灣官網首頁','現正推出'}
+    for token in parser.tokens:
+        token = re.sub(r'\s+', ' ', token).strip()
+        if not token or token in ignored or len(token) < 4 or len(token) > 140:
+            continue
+        if token.startswith('Copyright') or '隱私權政策' in token or '網站使用條款' in token:
+            continue
+        tokens.append(token)
+    title = ''
+    keywords = ('優惠','新品','新登場','限定','活動','買一送一','APP','聯名','回歸','推出')
+    for candidate in tokens:
+        if any(word in candidate for word in keywords):
+            title = candidate
+            break
+    if not title:
+        title = '查看麥當勞最新官方活動'
+    period = ''
+    date_re = re.compile(r'(?:20\d{2}[./-])?\d{1,2}[./-]\d{1,2}.{0,12}(?:20\d{2}[./-])?\d{1,2}[./-]\d{1,2}')
+    for token in tokens:
+        found = date_re.search(token)
+        if found:
+            period = found.group(0)
+            break
+    now = datetime.datetime.now(TZ)
+    return {
+        'ok': True,
+        'title': title[:120],
+        'period': period[:80],
+        'url': MCD_EVENT_URL,
+        'updated_at': now.strftime('%Y/%m/%d %H:%M'),
+        'refresh_seconds': MCD_CACHE_SECONDS,
+        'source': '台灣麥當勞官方網站'
+    }
+
+
+def _cached_mcdonalds_event():
+    now = time.time()
+    with _MCD_LOCK:
+        cached = _MCD_CACHE.get('latest')
+        if cached and now - cached['time'] < MCD_CACHE_SECONDS:
+            return cached['data']
+    data = _fetch_mcdonalds_event()
+    with _MCD_LOCK:
+        _MCD_CACHE['latest'] = {'time': now, 'data': data}
+    return data
+
 
 def register_rainbow_web(app, line_bot_api):
     # 不讓資料庫短暫連線失敗阻止 Render 啟動；實際開啟頁面/API 時仍會回報連線錯誤。
@@ -421,6 +763,56 @@ def register_rainbow_web(app, line_bot_api):
                 c.execute("INSERT INTO web_user_frames(group_id,user_id,frame_key,equipped) VALUES(%s,%s,%s,TRUE) ON CONFLICT(group_id,user_id,frame_key) DO UPDATE SET equipped=TRUE",(gid,uid,key)); conn.commit()
         finally: conn.close()
         return {'ok':True,'message':'頭像框已套用。'}
+
+    @app.get('/api/rainbow/weather')
+    async def api_weather(request: Request):
+        uid, gid = _auth(request)
+        region = _profile_region(gid, uid) or '臺中市太平區'
+        try:
+            return _cached_weather(region)
+        except Exception:
+            return JSONResponse(status_code=503, content={
+                'ok': False,
+                'message': '資訊更新中！',
+                'refresh_seconds': WEATHER_CACHE_SECONDS
+            })
+
+
+    @app.get('/api/rainbow/familymart')
+    async def api_familymart(request: Request):
+        _auth(request)
+        try:
+            return _cached_familymart_event()
+        except Exception:
+            return JSONResponse(status_code=503, content={
+                'ok': False,
+                'message': '資訊更新中！',
+                'refresh_seconds': FAMILY_CACHE_SECONDS
+            })
+
+    @app.get('/api/rainbow/seven')
+    async def api_seven(request: Request):
+        _auth(request)
+        try:
+            return _cached_seven_event()
+        except Exception:
+            return JSONResponse(status_code=503, content={
+                'ok': False,
+                'message': '資訊更新中！',
+                'refresh_seconds': SEVEN_CACHE_SECONDS
+            })
+
+    @app.get('/api/rainbow/mcdonalds')
+    async def api_mcdonalds(request: Request):
+        _auth(request)
+        try:
+            return _cached_mcdonalds_event()
+        except Exception:
+            return JSONResponse(status_code=503, content={
+                'ok': False,
+                'message': '資訊更新中！',
+                'refresh_seconds': MCD_CACHE_SECONDS
+            })
 
     @app.post('/api/rainbow/profile')
     async def api_profile(request: Request):
