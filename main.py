@@ -4688,15 +4688,20 @@ def handle_message(event):
         return
 
     # V6.4.6：所有一般前台入口統一導向個人網頁，不再產生舊版 Flex 功能頁。
+    # Rainbow Life 前台只有單一入口 /player。
+    # 各功能由網頁內的底部分頁與快捷按鈕切換，避免產生不存在的
+    # /player/fortune、/player/wheel、/player/profile 等網址。
     web_entry_targets = {
         "功能": "/player", "選單": "/player", "menu": "/player", "首頁": "/player",
         "功能中心": "/player", "個人中心": "/player", "我的中心": "/player",
-        "我的狀態": "/player", "我的資料": "/player", "狀態": "/player",
-        "每日運勢": "/player/fortune", "今日占卜": "/player/fortune",
-        "幸運輪盤": "/player/wheel", "每日轉盤": "/player/wheel", "轉盤": "/player/wheel",
+        "我的": "/player", "我的狀態": "/player", "我的資料": "/player", "狀態": "/player",
+        "每日運勢": "/player", "今日占卜": "/player", "運勢": "/player",
+        "幸運輪盤": "/player", "每日轉盤": "/player", "轉盤": "/player",
         "商店": "/player", "商店中心": "/player", "VIP商店": "/player",
         "道具商店": "/player", "稱號商店": "/player",
-        "編輯個人資料": "/player/profile", "隱私設定": "/player/privacy",
+        "背包": "/player", "我的背包": "/player", "道具背包": "/player",
+        "行事曆": "/player", "日曆": "/player", "提醒事項": "/player",
+        "編輯個人資料": "/player", "個人資料設定": "/player", "隱私設定": "/player",
     }
     web_target = web_entry_targets.get(text.lower()) or web_entry_targets.get(text)
     if web_target:
