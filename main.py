@@ -2792,16 +2792,33 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
     role_badge = _safe_card_text(get_admin_badge(group_id, target_user_id) or "👤 一般成員", "👤 一般成員", 16)
     collection = _namecard_collection_summary(group_id, target_user_id)
 
-    if equipped_frame == "leader_glory" and avatar:
-        frame_asset_url = f"{_game_admin_base_url()}/player/assets/leader-frame.png?v=2"
+    # Phase 1：聊天室名片同樣直接疊加目前身分對應頭像框，名片其他版面完全不動。
+    if player.get("is_vip") or player.get("vip_until"):
+        is_vip_card = bool(int(player.get("is_vip") or 0))
+    else:
+        is_vip_card = False
+    admin_badge_text = str(get_admin_badge(group_id, target_user_id) or "")
+    if "群長" in admin_badge_text or "Owner" in admin_badge_text:
+        equipped_frame = "leader_glory"
+    elif is_vip_card:
+        equipped_frame = "diamond_crown"
+    elif not equipped_frame:
+        equipped_frame = "rainbow_basic"
+
+    asset_name = {
+        "leader_glory": "leader-frame.png",
+        "diamond_crown": "vip-frame.png",
+    }.get(equipped_frame, "member-frame.png")
+    frame_asset_url = f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=1"
+    if avatar:
         avatar_box = {
-            "type": "box", "layout": "vertical", "width": "92px", "height": "92px",
+            "type": "box", "layout": "vertical", "width": "96px", "height": "96px",
             "flex": 0, "position": "relative", "contents": [
                 {
                     "type": "image", "url": avatar, "size": "full", "aspectRatio": "1:1",
-                    "aspectMode": "cover", "position": "absolute", "offsetTop": "16px",
-                    "offsetStart": "16px", "offsetBottom": "16px", "offsetEnd": "16px",
-                    "cornerRadius": "36px",
+                    "aspectMode": "cover", "position": "absolute", "offsetTop": "15px",
+                    "offsetStart": "15px", "offsetBottom": "15px", "offsetEnd": "15px",
+                    "cornerRadius": "33px",
                 },
                 {
                     "type": "image", "url": frame_asset_url, "size": "full", "aspectRatio": "1:1",
@@ -2811,18 +2828,12 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
             ],
         }
     else:
-        avatar_box = ({
-            "type": "box", "layout": "vertical", "width": "82px", "height": "82px",
-            "cornerRadius": "41px", "backgroundColor": theme["panel"], "borderWidth": "3px",
-            "borderColor": frame_color, "flex": 0,
-            "contents": [{"type": "image", "url": avatar, "size": "full", "aspectRatio": "1:1",
-                          "aspectMode": "cover", "cornerRadius": "41px"}],
-        } if avatar else {
+        avatar_box = {
             "type": "box", "layout": "vertical", "width": "82px", "height": "82px",
             "cornerRadius": "41px", "backgroundColor": theme["panel"], "borderWidth": "3px",
             "borderColor": frame_color, "justifyContent": "center", "alignItems": "center", "flex": 0,
             "contents": [{"type": "text", "text": "👤", "size": "xxl", "align": "center"}],
-        })
+        }
 
     progress_bar = {
         "type": "box", "layout": "vertical", "height": "8px", "cornerRadius": "4px",
