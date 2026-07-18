@@ -2791,7 +2791,7 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
     frame_colors = {
         "rainbow_basic": "#B76CFF", "star_guard": "#7E71FF", "ice_crystal": "#72DFFF",
         "forest_guard": "#65CE70", "sweet_heart": "#FF79B2", "flame_soul": "#FF6338",
-        "diamond_crown": "#FFD45E", "leader_glory": "#FFD45E",
+        "diamond_crown": "#FFD45E", "leader_glory_wings": "#FFD45E",
     }
     frame_color = frame_colors.get(equipped_frame, theme["accent"])
     main_title = _safe_card_text(player.get("custom_title"), "", 16) or rank_title(level)
@@ -2811,17 +2811,17 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
     owner_env_id = str(os.getenv("RAINBOW_OWNER_USER_ID") or "").strip()
     is_system_owner = bool(owner_env_id and str(target_user_id) == owner_env_id)
     if is_system_owner or "Rainbow Life Owner" in admin_badge_text or "最高" in admin_badge_text or "群長" in admin_badge_text or "Owner" in admin_badge_text:
-        equipped_frame = "leader_glory"
+        equipped_frame = "leader_glory_wings"
     elif is_vip_card:
         equipped_frame = "diamond_crown"
     elif not equipped_frame:
         equipped_frame = "rainbow_basic"
 
     asset_name = {
-        "leader_glory": "owner-rainbow-cosmos-frame-line.png",
+        "leader_glory_wings": "frames/39557-line.png",
         "diamond_crown": "vip-frame.png",
     }.get(equipped_frame, "member-frame.png")
-    frame_asset_url = f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=20"
+    frame_asset_url = f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=10"
     if avatar:
         avatar_box = {
             "type": "box", "layout": "vertical", "width": "112px", "height": "112px",

@@ -1,14 +1,11 @@
-Rainbow Life Owner 彩虹星空頭像框｜一步驟重做完成
+Rainbow Life Owner「彩虹鑽石之翼」完整重做版
 
-直接將本 ZIP 內檔案覆蓋到原專案相同位置：
-- main.py
-- rainbow_web.py
-- rainbow_static/owner-rainbow-cosmos-frame.png
-- rainbow_static/owner-rainbow-cosmos-frame-line.png
+直接將壓縮檔內檔案上傳覆蓋原專案後重新部署。
 
-本次只重做 Owner 頭像框與最外圈特效：
-1. 個人中心原版面不變
-2. 聊天室名片原版面不變
-3. 頭像圈縮小，不遮住 LINE 大頭照
-4. 明顯七彩彩虹流光、皇冠、水晶、星光與外圈旋轉呼吸特效
-5. Owner 身分優先套用，名片使用靜態高亮版本
+本版內容：
+1. Owner 專屬框改為 leader_glory_wings。
+2. 使用 rainbow_static/frames/39557.png。
+3. Owner 登入時自動取得並強制裝備，其他框自動取消。
+4. 個人中心與聊天室名片原版面、按鈕、卡片及資訊排列完全不變。
+5. 加入彩虹光暈、呼吸光效、輕微翼動與水晶折射感。
+6. 舊 Owner 星空框資源已移除。
