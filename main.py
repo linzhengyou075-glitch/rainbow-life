@@ -2185,6 +2185,92 @@ def vip_management_message():
     )
 
 
+
+# ===== Rainbow Life 第三包重製版：後台／個人中心／LINE 共用公告資料 =====
+def get_active_web_announcements(group_id, limit=10):
+    """讀取後台 web_announcements；個人中心與 LINE 共用同一資料表。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as c:
+            c.execute(
+                """SELECT id,title,content,link_url,(image_data IS NOT NULL) AS has_image,
+                          COALESCE(sort_order,50) AS sort_order,created_at
+                   FROM web_announcements
+                   WHERE group_id=%s AND is_active=1
+                     AND (starts_at IS NULL OR starts_at<=CURRENT_TIMESTAMP)
+                     AND (ends_at IS NULL OR ends_at>=CURRENT_TIMESTAMP)
+                   ORDER BY COALESCE(sort_order,50) ASC,id DESC
+                   LIMIT %s""",
+                (group_id, max(1, min(int(limit or 10), 10))),
+            )
+            return [dict(x) for x in c.fetchall()]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def _announcement_public_image_url(group_id, announcement_id):
+    base = _game_admin_base_url()
+    if not base:
+        return ""
+    from urllib.parse import quote
+    return f"{base}/api/rainbow/public/announcement/{int(announcement_id)}/image?gid={quote(str(group_id), safe='')}"
+
+
+def _announcement_player_url(group_id, announcement_id=None):
+    path = "/player?tab=announcements"
+    if announcement_id:
+        path += f"&announcement={int(announcement_id)}"
+    try:
+        return make_player_entry_url(group_id, path)
+    except Exception:
+        return ""
+
+
+def announcement_carousel_flex(group_id, items=None):
+    items = list(items or get_active_web_announcements(group_id, 10))
+    if not items:
+        return TextSendMessage(text="📭 目前沒有公告")
+    bubbles=[]
+    for row in items[:10]:
+        title=str(row.get('title') or 'Rainbow Life 公告')[:80]
+        content=str(row.get('content') or '').strip()[:500]
+        aid=int(row.get('id') or 0)
+        body=[
+            {"type":"text","text":"📢 RAINBOW LIFE","size":"xs","weight":"bold","color":"#C4B5FD"},
+            {"type":"text","text":title,"size":"xl","weight":"bold","color":"#FFFFFF","wrap":True},
+        ]
+        if content:
+            body.append({"type":"text","text":content,"size":"sm","color":"#EDE9FE","wrap":True,"maxLines":8,"lineSpacing":"5px"})
+        body.append({"type":"text","text":"左右滑動可查看其他公告","size":"xxs","color":"#A99DD8","align":"center","margin":"md"})
+        bubble={
+            "type":"bubble","size":"mega",
+            "styles":{"body":{"backgroundColor":"#120B38"},"footer":{"backgroundColor":"#120B38","separator":True,"separatorColor":"#4C3C88"}},
+            "body":{"type":"box","layout":"vertical","paddingAll":"18px","spacing":"md","contents":body},
+            "footer":{"type":"box","layout":"vertical","paddingAll":"12px","contents":[{
+                "type":"button","style":"primary","height":"sm","color":"#8B5CF6",
+                "action":{"type":"uri","label":"查看完整公告","uri":_announcement_player_url(group_id, aid) or (_game_admin_base_url() or 'https://line.me')}
+            }]}
+        }
+        if row.get('has_image'):
+            img=_announcement_public_image_url(group_id,aid)
+            if img:
+                bubble["hero"]={"type":"image","url":img,"size":"full","aspectRatio":"20:13","aspectMode":"cover"}
+        bubbles.append(bubble)
+    return FlexSendMessage(alt_text="📢 Rainbow Life 公告", contents={"type":"carousel","contents":bubbles})
+
+
+def push_web_announcements(group_id):
+    items=get_active_web_announcements(group_id,10)
+    if not items:
+        return False
+    try:
+        line_bot_api.push_message(group_id, announcement_carousel_flex(group_id,items))
+        return True
+    except Exception:
+        return False
+
 def is_announcement_enabled(group_id):
     return get_event_value(group_id, "announcement_enabled", "0") == "1"
 
@@ -2266,30 +2352,23 @@ def push_announcement(group_id):
 
 
 def maybe_push_scheduled_announcement(group_id):
-    if group_id == "PRIVATE":
+    """08:00／12:00／18:00 推播後台目前啟用公告；每時段每日一次。"""
+    if group_id == "PRIVATE" or not is_announcement_enabled(group_id):
         return
-    if not is_announcement_enabled(group_id):
+    if not get_active_web_announcements(group_id, 1):
         return
-    content = get_announcement_content(group_id)
-    if not content:
-        return
-    time_text = get_announcement_time(group_id)
-    if not valid_hhmm(time_text):
-        return
-
     now = tw_now_real()
     today_key = now.date().isoformat()
-    if get_event_value(group_id, "announcement_last_push_date", "") == today_key:
-        return
-
-    hh, mm = [int(x) for x in time_text.split(":")]
     now_minutes = now.hour * 60 + now.minute
-    target_minutes = hh * 60 + mm
-    # Render 無常駐排程，改成有人發言時檢查；只在設定時間後 30 分鐘內補推一次。
-    if 0 <= now_minutes - target_minutes <= 30:
-        ok = announce_group(group_id, format_announcement_message(content, title="📅 每日公告"))
-        if ok:
-            set_event_value(group_id, "announcement_last_push_date", today_key)
+    for time_text in ("08:00", "12:00", "18:00"):
+        hh, mm = [int(x) for x in time_text.split(":")]
+        target_minutes = hh * 60 + mm
+        push_key = f"announcement_last_push_{time_text.replace(':', '')}"
+        if get_event_value(group_id, push_key, "") != today_key and 0 <= now_minutes-target_minutes <= 30:
+            if push_web_announcements(group_id):
+                set_event_value(group_id, push_key, today_key)
+                set_event_value(group_id, "announcement_last_push_date", today_key)
+            break
 
 
 # ===== V2.2.7：排程中心 =====
@@ -5256,8 +5335,9 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 公告內容已修改。"))
         return
 
-    if text == "查看公告":
-        line_bot_api.reply_message(event.reply_token, announcement_view_flex(get_announcement_content(group_id), is_announcement_enabled(group_id), get_announcement_time(group_id)))
+    if text in ["公告", "最新公告", "查看公告"]:
+        # 直接讀取後台 web_announcements，與個人中心完全共用同一份公告。
+        line_bot_api.reply_message(event.reply_token, announcement_carousel_flex(group_id))
         return
 
     if text == "刪除公告":
