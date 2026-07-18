@@ -2819,16 +2819,16 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
         "leader_glory": "leader-frame.png",
         "diamond_crown": "vip-frame.png",
     }.get(equipped_frame, "member-frame.png")
-    frame_asset_url = f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=1"
+    frame_asset_url = f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=2"
     if avatar:
         avatar_box = {
-            "type": "box", "layout": "vertical", "width": "96px", "height": "96px",
+            "type": "box", "layout": "vertical", "width": "112px", "height": "112px",
             "flex": 0, "position": "relative", "contents": [
                 {
                     "type": "image", "url": avatar, "size": "full", "aspectRatio": "1:1",
-                    "aspectMode": "cover", "position": "absolute", "offsetTop": "15px",
-                    "offsetStart": "15px", "offsetBottom": "15px", "offsetEnd": "15px",
-                    "cornerRadius": "33px",
+                    "aspectMode": "cover", "position": "absolute", "offsetTop": "22px",
+                    "offsetStart": "22px", "offsetBottom": "22px", "offsetEnd": "22px",
+                    "cornerRadius": "34px",
                 },
                 {
                     "type": "image", "url": frame_asset_url, "size": "full", "aspectRatio": "1:1",
