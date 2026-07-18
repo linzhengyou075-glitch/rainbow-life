@@ -2192,19 +2192,33 @@ def get_active_web_announcements(group_id, limit=10):
     conn = get_connection()
     try:
         with conn.cursor() as c:
-            c.execute(
-                """SELECT id,title,content,link_url,(image_data IS NOT NULL) AS has_image,
-                          COALESCE(sort_order,50) AS sort_order,created_at
-                   FROM web_announcements
-                   WHERE group_id=%s AND is_active=1
-                     AND (starts_at IS NULL OR starts_at<=CURRENT_TIMESTAMP)
-                     AND (ends_at IS NULL OR ends_at>=CURRENT_TIMESTAMP)
-                   ORDER BY COALESCE(sort_order,50) ASC,id DESC
-                   LIMIT %s""",
-                (group_id, max(1, min(int(limit or 10), 10))),
-            )
-            return [dict(x) for x in c.fetchall()]
-    except Exception:
+            sql = """SELECT id,title,content,link_url,(image_data IS NOT NULL) AS has_image,
+                            COALESCE(sort_order,50) AS sort_order,created_at
+                     FROM web_announcements
+                     WHERE group_id=%s AND is_active=1
+                       AND (starts_at IS NULL OR starts_at<=CURRENT_TIMESTAMP)
+                       AND (ends_at IS NULL OR ends_at>=CURRENT_TIMESTAMP)
+                     ORDER BY COALESCE(sort_order,50) ASC,id DESC
+                     LIMIT %s"""
+            safe_limit = max(1, min(int(limit or 10), 10))
+            c.execute(sql, (group_id, safe_limit))
+            rows = [dict(x) for x in c.fetchall()]
+            if rows:
+                return rows
+            # 舊版連結曾把公告寫入另一個已選群組；只有在資料庫中僅有一個啟用公告群組時才安全回退。
+            c.execute("""SELECT group_id FROM web_announcements
+                         WHERE is_active=1
+                           AND (starts_at IS NULL OR starts_at<=CURRENT_TIMESTAMP)
+                           AND (ends_at IS NULL OR ends_at>=CURRENT_TIMESTAMP)
+                         GROUP BY group_id ORDER BY MAX(id) DESC LIMIT 2""")
+            groups=[str((x or {}).get('group_id') or '') for x in c.fetchall()]
+            groups=[x for x in groups if x]
+            if len(groups)==1 and groups[0] != str(group_id):
+                c.execute(sql, (groups[0], safe_limit))
+                return [dict(x) for x in c.fetchall()]
+            return []
+    except Exception as exc:
+        print(f"[ANNOUNCEMENT_READ_ERROR] group={group_id!r}: {exc}")
         return []
     finally:
         conn.close()
