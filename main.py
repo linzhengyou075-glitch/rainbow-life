@@ -2808,7 +2808,9 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
     else:
         is_vip_card = False
     admin_badge_text = str(get_admin_badge(group_id, target_user_id) or "")
-    if "群長" in admin_badge_text or "Owner" in admin_badge_text:
+    owner_env_id = str(os.getenv("RAINBOW_OWNER_USER_ID") or "").strip()
+    is_system_owner = bool(owner_env_id and str(target_user_id) == owner_env_id)
+    if is_system_owner or "Rainbow Life Owner" in admin_badge_text or "最高" in admin_badge_text or "群長" in admin_badge_text or "Owner" in admin_badge_text:
         equipped_frame = "leader_glory"
     elif is_vip_card:
         equipped_frame = "diamond_crown"
@@ -2816,19 +2818,19 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
         equipped_frame = "rainbow_basic"
 
     asset_name = {
-        "leader_glory": "leader-frame.png",
+        "leader_glory": "owner-rainbow-cosmos-frame-line.png",
         "diamond_crown": "vip-frame.png",
     }.get(equipped_frame, "member-frame.png")
-    frame_asset_url = f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=2"
+    frame_asset_url = f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=20"
     if avatar:
         avatar_box = {
             "type": "box", "layout": "vertical", "width": "112px", "height": "112px",
             "flex": 0, "position": "relative", "contents": [
                 {
                     "type": "image", "url": avatar, "size": "full", "aspectRatio": "1:1",
-                    "aspectMode": "cover", "position": "absolute", "offsetTop": "22px",
-                    "offsetStart": "22px", "offsetBottom": "22px", "offsetEnd": "22px",
-                    "cornerRadius": "34px",
+                    "aspectMode": "cover", "position": "absolute", "offsetTop": "24px",
+                    "offsetStart": "24px", "offsetBottom": "24px", "offsetEnd": "24px",
+                    "cornerRadius": "32px",
                 },
                 {
                     "type": "image", "url": frame_asset_url, "size": "full", "aspectRatio": "1:1",
