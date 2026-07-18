@@ -261,6 +261,11 @@ def ensure_web_tables():
                 equipped BOOLEAN NOT NULL DEFAULT FALSE, acquired_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(group_id,user_id,frame_key)
             )""")
+            c.execute("ALTER TABLE web_user_frames ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'system'")
+            c.execute("ALTER TABLE web_user_frames ADD COLUMN IF NOT EXISTS source_key TEXT NOT NULL DEFAULT ''")
+            c.execute("ALTER TABLE web_user_frames ADD COLUMN IF NOT EXISTS permanent BOOLEAN NOT NULL DEFAULT TRUE")
+            c.execute("ALTER TABLE web_user_frames ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
+            c.execute("ALTER TABLE web_user_frames ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP")
             c.execute("""CREATE TABLE IF NOT EXISTS web_achievements (
                 achievement_key TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
                 condition_type TEXT NOT NULL DEFAULT 'manual', condition_value INTEGER NOT NULL DEFAULT 0,
@@ -305,6 +310,102 @@ def ensure_web_tables():
         conn.close()
 
 
+
+def _sync_frame_entitlements(group_id, user_id, player, role, total_sign, is_vip):
+    """Phase 2：同步身分、VIP、成就取得與目前配戴，不改動既有版面。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as c:
+            # 每位成員永遠擁有預設框。
+            c.execute("""INSERT INTO web_user_frames
+                (group_id,user_id,frame_key,equipped,source,source_key,permanent,updated_at)
+                VALUES(%s,%s,'rainbow_basic',FALSE,'system','default',TRUE,CURRENT_TIMESTAMP)
+                ON CONFLICT(group_id,user_id,frame_key) DO UPDATE
+                SET permanent=TRUE,updated_at=CURRENT_TIMESTAMP""", (group_id,user_id))
+
+            # 系統依目前資料自動判定成就；手動型成就仍由活動／後台流程發放。
+            c.execute("""SELECT achievement_key,condition_type,condition_value,frame_key
+                         FROM web_achievements WHERE is_active=TRUE""")
+            achievements = [dict(x) for x in c.fetchall()]
+            level = max(1, int((player or {}).get('level') or 1))
+            today_messages = max(0, int((player or {}).get('today_msg_count') or 0))
+            total_messages = max(today_messages, int((player or {}).get('total_msg_count') or 0))
+            streak = max(0, int((player or {}).get('streak_count') or 0))
+            for achievement in achievements:
+                kind = str(achievement.get('condition_type') or 'manual').strip().lower()
+                target = max(0, int(achievement.get('condition_value') or 0))
+                current = {
+                    'sign_total': total_sign,
+                    'level': level,
+                    'messages': today_messages,
+                    'today_messages': today_messages,
+                    'chat_total': total_messages,
+                    'streak': streak,
+                }.get(kind, -1)
+                if current < 0 or current < target:
+                    continue
+                ach_key = str(achievement.get('achievement_key') or '')
+                frame_key = str(achievement.get('frame_key') or '')
+                c.execute("""INSERT INTO web_user_achievements(group_id,user_id,achievement_key)
+                             VALUES(%s,%s,%s) ON CONFLICT DO NOTHING""", (group_id,user_id,ach_key))
+                if frame_key:
+                    c.execute("""INSERT INTO web_user_frames
+                        (group_id,user_id,frame_key,equipped,source,source_key,permanent,updated_at)
+                        VALUES(%s,%s,%s,FALSE,'achievement',%s,TRUE,CURRENT_TIMESTAMP)
+                        ON CONFLICT(group_id,user_id,frame_key) DO UPDATE SET
+                        source=CASE WHEN web_user_frames.source IN ('system','vip','owner') THEN EXCLUDED.source ELSE web_user_frames.source END,
+                        source_key=CASE WHEN web_user_frames.source_key='' THEN EXCLUDED.source_key ELSE web_user_frames.source_key END,
+                        permanent=TRUE,updated_at=CURRENT_TIMESTAMP""",
+                        (group_id,user_id,frame_key,ach_key))
+
+            # 群長與 VIP 權限框由系統自動發放；資格消失只取消使用權，不刪永久活動收藏。
+            if role == 'owner':
+                c.execute("""INSERT INTO web_user_frames
+                    (group_id,user_id,frame_key,equipped,source,source_key,permanent,updated_at)
+                    VALUES(%s,%s,'leader_glory',FALSE,'owner','role',TRUE,CURRENT_TIMESTAMP)
+                    ON CONFLICT(group_id,user_id,frame_key) DO UPDATE SET source='owner',permanent=TRUE,updated_at=CURRENT_TIMESTAMP""",
+                    (group_id,user_id))
+            if is_vip:
+                c.execute("""INSERT INTO web_user_frames
+                    (group_id,user_id,frame_key,equipped,source,source_key,permanent,updated_at)
+                    VALUES(%s,%s,'diamond_crown',FALSE,'vip','vip_status',FALSE,CURRENT_TIMESTAMP)
+                    ON CONFLICT(group_id,user_id,frame_key) DO UPDATE SET source='vip',permanent=FALSE,updated_at=CURRENT_TIMESTAMP""",
+                    (group_id,user_id))
+            else:
+                c.execute("UPDATE web_user_frames SET equipped=FALSE,updated_at=CURRENT_TIMESTAMP WHERE group_id=%s AND user_id=%s AND frame_key='diamond_crown'", (group_id,user_id))
+
+            # 固定優先：群長 > VIP > 已配戴且仍有效的活動／成就框 > 最近取得框 > 預設框。
+            selected = ''
+            if role == 'owner':
+                selected = 'leader_glory'
+            elif is_vip:
+                selected = 'diamond_crown'
+            else:
+                c.execute("""SELECT uf.frame_key FROM web_user_frames uf
+                             JOIN web_avatar_frames f ON f.frame_key=uf.frame_key AND f.is_active=TRUE
+                             WHERE uf.group_id=%s AND uf.user_id=%s AND uf.equipped=TRUE
+                               AND f.owner_only=FALSE AND f.vip_only=FALSE
+                               AND (uf.expires_at IS NULL OR uf.expires_at>=CURRENT_TIMESTAMP)
+                             LIMIT 1""", (group_id,user_id))
+                row = c.fetchone() or {}
+                selected = str(row.get('frame_key') or '')
+                if not selected:
+                    c.execute("""SELECT uf.frame_key FROM web_user_frames uf
+                                 JOIN web_avatar_frames f ON f.frame_key=uf.frame_key AND f.is_active=TRUE
+                                 WHERE uf.group_id=%s AND uf.user_id=%s
+                                   AND f.owner_only=FALSE AND f.vip_only=FALSE
+                                   AND (uf.expires_at IS NULL OR uf.expires_at>=CURRENT_TIMESTAMP)
+                                 ORDER BY CASE WHEN uf.frame_key='rainbow_basic' THEN 1 ELSE 0 END,
+                                          uf.acquired_at DESC LIMIT 1""", (group_id,user_id))
+                    selected = str((c.fetchone() or {}).get('frame_key') or 'rainbow_basic')
+            c.execute("UPDATE web_user_frames SET equipped=FALSE,updated_at=CURRENT_TIMESTAMP WHERE group_id=%s AND user_id=%s", (group_id,user_id))
+            c.execute("UPDATE web_user_frames SET equipped=TRUE,updated_at=CURRENT_TIMESTAMP WHERE group_id=%s AND user_id=%s AND frame_key=%s", (group_id,user_id,selected))
+        conn.commit()
+        return selected
+    finally:
+        conn.close()
+
+
 def _player_data(line_bot_api, group_id, user_id):
     conn = get_connection()
     try:
@@ -325,7 +426,8 @@ def _player_data(line_bot_api, group_id, user_id):
             events = [dict(x) for x in c.fetchall()]
             c.execute('''SELECT f.frame_key,f.name,f.price,f.vip_only,f.owner_only,a.name AS achievement_name,
                                CASE WHEN uf.frame_key IS NOT NULL THEN TRUE ELSE FALSE END AS owned,
-                               CASE WHEN uf.equipped=TRUE THEN TRUE ELSE FALSE END AS equipped
+                               CASE WHEN uf.equipped=TRUE THEN TRUE ELSE FALSE END AS equipped,
+                               uf.acquired_at,uf.source,uf.source_key,uf.permanent,uf.expires_at
                         FROM web_avatar_frames f
                         LEFT JOIN web_user_frames uf ON uf.frame_key=f.frame_key AND uf.group_id=%s AND uf.user_id=%s
                         LEFT JOIN web_achievements a ON a.frame_key=f.frame_key AND a.is_active=TRUE
@@ -350,7 +452,31 @@ def _player_data(line_bot_api, group_id, user_id):
     needed = max(100, int(100 * (1.15 ** max(level - 1, 0))))
     vip_until = str(p.get('vip_until') or '')
     is_vip = int(p.get('is_vip') or 0) == 1
-    equipped_frame = next((str(x.get('frame_key')) for x in frames if x.get('equipped')), '')
+    equipped_frame = _sync_frame_entitlements(group_id,user_id,p,role,total_sign,is_vip)
+    # 同步完成後重新讀取收藏與發放來源，讓個人中心／名片即時一致。
+    conn = get_connection()
+    try:
+        with conn.cursor() as c:
+            c.execute('''SELECT f.frame_key,f.name,f.price,f.vip_only,f.owner_only,a.name AS achievement_name,
+                               CASE WHEN uf.frame_key IS NOT NULL THEN TRUE ELSE FALSE END AS owned,
+                               CASE WHEN uf.equipped=TRUE THEN TRUE ELSE FALSE END AS equipped,
+                               uf.acquired_at,uf.source,uf.source_key,uf.permanent,uf.expires_at
+                        FROM web_avatar_frames f
+                        LEFT JOIN web_user_frames uf ON uf.frame_key=f.frame_key AND uf.group_id=%s AND uf.user_id=%s
+                        LEFT JOIN web_achievements a ON a.frame_key=f.frame_key AND a.is_active=TRUE
+                        WHERE f.is_active=TRUE ORDER BY f.owner_only DESC,f.vip_only DESC,f.price ASC,f.frame_key''',(group_id,user_id))
+            frames = [dict(x) for x in c.fetchall()]
+            c.execute('''SELECT a.achievement_key,a.name,a.description,a.condition_type,a.condition_value,a.frame_key,
+                               a.category,a.icon,a.sort_order,
+                               CASE WHEN ua.achievement_key IS NOT NULL THEN TRUE ELSE FALSE END AS unlocked,
+                               ua.unlocked_at,f.name AS frame_name
+                        FROM web_achievements a
+                        LEFT JOIN web_user_achievements ua ON ua.achievement_key=a.achievement_key AND ua.group_id=%s AND ua.user_id=%s
+                        LEFT JOIN web_avatar_frames f ON f.frame_key=a.frame_key
+                        WHERE a.is_active=TRUE ORDER BY a.sort_order,a.condition_value,a.achievement_key''',(group_id,user_id))
+            achievements = [dict(x) for x in c.fetchall()]
+    finally:
+        conn.close()
     if role == 'owner':
         equipped_frame = equipped_frame or 'leader_glory'
     elif is_vip:
@@ -369,7 +495,15 @@ def _player_data(line_bot_api, group_id, user_id):
     for achievement in achievements:
         kind = str(achievement.get('condition_type') or 'manual')
         target = max(0, int(achievement.get('condition_value') or 0))
-        current = total_sign if kind == 'sign_total' else int(p.get('today_msg_count') or 0) if kind == 'messages' else (target if achievement.get('unlocked') else 0)
+        current_map = {
+            'sign_total': total_sign,
+            'level': level,
+            'messages': int(p.get('today_msg_count') or 0),
+            'today_messages': int(p.get('today_msg_count') or 0),
+            'chat_total': max(int(p.get('today_msg_count') or 0),int(p.get('total_msg_count') or 0)),
+            'streak': int(p.get('streak_count') or 0),
+        }
+        current = current_map.get(kind, target if achievement.get('unlocked') else 0)
         achievement['current'] = current
         achievement['target'] = target
         achievement['progress'] = 100 if achievement.get('unlocked') or target <= 0 else min(100, int(current * 100 / target))
@@ -1212,8 +1346,12 @@ def register_rainbow_web(app, line_bot_api):
                 if not frame.get('vip_only') and not frame.get('owner_only') and key!='rainbow_basic':
                     c.execute('SELECT 1 AS ok FROM web_user_frames WHERE group_id=%s AND user_id=%s AND frame_key=%s',(gid,uid,key))
                     if not c.fetchone(): raise HTTPException(403,'此頭像框尚未透過成就或活動解鎖。')
-                c.execute('UPDATE web_user_frames SET equipped=FALSE WHERE group_id=%s AND user_id=%s',(gid,uid))
-                c.execute("INSERT INTO web_user_frames(group_id,user_id,frame_key,equipped) VALUES(%s,%s,%s,TRUE) ON CONFLICT(group_id,user_id,frame_key) DO UPDATE SET equipped=TRUE",(gid,uid,key)); conn.commit()
+                if role=='owner' and key!='leader_glory': raise HTTPException(403,'群長固定使用最高限定頭像框。')
+                if role!='owner' and data['vip'] and key!='diamond_crown': raise HTTPException(403,'VIP 期間自動使用 VIP 頭像框。')
+                c.execute('UPDATE web_user_frames SET equipped=FALSE,updated_at=CURRENT_TIMESTAMP WHERE group_id=%s AND user_id=%s',(gid,uid))
+                c.execute("""INSERT INTO web_user_frames(group_id,user_id,frame_key,equipped,source,source_key,permanent,updated_at)
+                    VALUES(%s,%s,%s,TRUE,'system','manual_equip',TRUE,CURRENT_TIMESTAMP)
+                    ON CONFLICT(group_id,user_id,frame_key) DO UPDATE SET equipped=TRUE,updated_at=CURRENT_TIMESTAMP""",(gid,uid,key)); conn.commit()
         finally: conn.close()
         return {'ok':True,'message':'頭像框已套用。'}
 

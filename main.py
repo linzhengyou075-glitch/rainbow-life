@@ -2751,13 +2751,23 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
             with conn.cursor() as c:
                 try:
                     c.execute(
-                        "SELECT equipped_frame FROM player_frame_settings WHERE group_id=%s AND user_id=%s",
+                        "SELECT frame_key AS equipped_frame FROM web_user_frames "
+                        "WHERE group_id=%s AND user_id=%s AND equipped=TRUE LIMIT 1",
                         (group_id, target_user_id),
                     )
                     fr = c.fetchone() or {}
                     equipped_frame = str(fr.get("equipped_frame") or "rainbow_basic")
                 except Exception:
                     conn.rollback()
+                    try:
+                        c.execute(
+                            "SELECT equipped_frame FROM player_frame_settings WHERE group_id=%s AND user_id=%s",
+                            (group_id, target_user_id),
+                        )
+                        fr = c.fetchone() or {}
+                        equipped_frame = str(fr.get("equipped_frame") or "rainbow_basic")
+                    except Exception:
+                        conn.rollback()
                 try:
                     c.execute(
                         "SELECT sign_date FROM sign_records WHERE group_id=%s AND user_id=%s "
