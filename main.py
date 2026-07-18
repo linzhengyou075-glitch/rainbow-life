@@ -57,6 +57,100 @@ from control_center import (
 )
 
 
+# ===== Rainbow Life 第二包：聊天室通知框統一（不修改個人中心／名片） =====
+def _rainbow_center_button():
+    return {
+        "type": "button",
+        "style": "primary",
+        "height": "sm",
+        "color": "#8B5CF6",
+        "action": {"type": "message", "label": "👤 個人中心", "text": "個人中心"},
+    }
+
+
+def _rainbow_notice_flex(title, message, success=True, *args, **kwargs):
+    title = str(title or "Rainbow Life 通知")[:40]
+    message = str(message or "")[:1200]
+    accent = "#A78BFA" if success else "#FB7185"
+    icon = "✨" if success else "⚠️"
+    bubble = {
+        "type": "bubble",
+        "size": "kilo",
+        "styles": {
+            "header": {"backgroundColor": "#21164F"},
+            "body": {"backgroundColor": "#120B38"},
+            "footer": {"backgroundColor": "#120B38", "separator": True, "separatorColor": "#4C3C88"},
+        },
+        "header": {
+            "type": "box", "layout": "horizontal", "paddingAll": "14px", "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": icon, "size": "lg", "flex": 0},
+                {"type": "text", "text": title, "size": "md", "weight": "bold", "color": "#FFFFFF", "wrap": True, "flex": 1},
+                {"type": "text", "text": "RAINBOW LIFE", "size": "xxs", "color": accent, "align": "end", "gravity": "center"},
+            ],
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "paddingAll": "16px", "spacing": "md",
+            "contents": [
+                {
+                    "type": "box", "layout": "vertical", "paddingAll": "13px", "cornerRadius": "16px",
+                    "backgroundColor": "#21164F",
+                    "contents": [{"type": "text", "text": message or "已完成", "size": "sm", "color": "#F8F7FF", "wrap": True, "lineSpacing": "6px"}],
+                },
+                {"type": "text", "text": "Rainbow Life · 系統通知", "size": "xxs", "color": "#A99DD8", "align": "center"},
+            ],
+        },
+        "footer": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": [_rainbow_center_button()]},
+    }
+    return FlexSendMessage(alt_text=title, contents=bubble)
+
+
+def _rainbow_sign_result_flex(data):
+    data = dict(data or {})
+    already = bool(data.get("already"))
+    title = "✅ 今日已完成簽到" if already else "🌈 簽到成功"
+    rows = []
+    def row(label, value):
+        rows.append({
+            "type": "box", "layout": "horizontal", "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": label, "size": "sm", "color": "#BEB5E9", "flex": 4},
+                {"type": "text", "text": str(value), "size": "sm", "weight": "bold", "color": "#FFFFFF", "align": "end", "flex": 6, "wrap": True},
+            ],
+        })
+    row("📅 簽到日期", data.get("date") or "--")
+    if data.get("time"): row("🕒 簽到時間", data.get("time"))
+    row("🔥 連續簽到", f"{int(data.get('streak') or 0)} 天")
+    row("📝 累積簽到", f"{int(data.get('total') or 0)} 天")
+    if not already:
+        if data.get("exp") is not None: row("⭐ 本次 EXP", f"+{int(data.get('exp') or 0):,}")
+        if data.get("coins") is not None: row("🌈 本次獎勵", f"+{int(data.get('coins') or 0):,}")
+    row("⏰ 下次簽到", data.get("next_time") or "明天 05:00 後")
+    bonus = [str(x) for x in (data.get("bonus_lines") or []) if str(x).strip()]
+    body_contents = [
+        {"type": "box", "layout": "vertical", "paddingAll": "13px", "cornerRadius": "16px", "backgroundColor": "#21164F", "spacing": "sm", "contents": rows}
+    ]
+    if bonus:
+        body_contents.append({"type": "text", "text": "\n".join(bonus)[:800], "size": "xs", "color": "#D8D2F5", "wrap": True, "lineSpacing": "5px"})
+    bubble = {
+        "type": "bubble", "size": "kilo",
+        "styles": {"header": {"backgroundColor": "#21164F"}, "body": {"backgroundColor": "#120B38"}, "footer": {"backgroundColor": "#120B38", "separator": True, "separatorColor": "#4C3C88"}},
+        "header": {"type": "box", "layout": "horizontal", "paddingAll": "14px", "contents": [
+            {"type": "text", "text": title, "size": "md", "weight": "bold", "color": "#FFFFFF", "flex": 1},
+            {"type": "text", "text": "SIGN IN", "size": "xxs", "color": "#C4B5FD", "align": "end"},
+        ]},
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "16px", "spacing": "md", "contents": body_contents},
+        "footer": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": [_rainbow_center_button()]},
+    }
+    return FlexSendMessage(alt_text=title, contents=bubble)
+
+
+# 重新綁定本檔後續使用的通知元件。
+# 不改 flex_ui.py，避免影響名片與個人中心。
+operation_notice_flex = _rainbow_notice_flex
+sign_result_flex = _rainbow_sign_result_flex
+
+
 
 def get_vip_setting_counts(group_id):
     conn = get_connection()
@@ -6739,11 +6833,11 @@ def handle_message(event):
             notes.append("🎁 寶箱雨模式中")
         bonus_note = "\n" + "｜".join(notes) if notes else ""
         messages = [TextSendMessage(text=f"🎁 掉落黃金寶箱！+{CHAT_CHEST_COIN} 彩虹幣{bonus_note}{activity_gain_msg}")]
-        if exp_result.get("leveled_up"):
-            messages.append(level_up_flex(display_name or "成員", exp_result))
+        # 升級／段位變化只更新資料，不在聊天室推播。
         line_bot_api.reply_message(event.reply_token, messages)
     elif exp_result.get("leveled_up"):
-        line_bot_api.reply_message(event.reply_token, level_up_flex(display_name or "成員", exp_result))
+        # 依 Rainbow Life 規則：升級與段位通知僅顯示於個人中心。
+        pass
 
 
 if __name__ == "__main__":
