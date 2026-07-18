@@ -2818,10 +2818,10 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
         equipped_frame = "rainbow_basic"
 
     asset_name = {
-        "leader_glory_wings": "frames/39557-line.png",
+        "leader_glory_wings": "__embedded_owner_frame__",
         "diamond_crown": "vip-frame.png",
     }.get(equipped_frame, "member-frame.png")
-    frame_asset_url = f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=10"
+    frame_asset_url = (f"{_game_admin_base_url()}/rainbow-owner-frame.png?v=39557fix2" if asset_name == "__embedded_owner_frame__" else f"{_game_admin_base_url()}/rainbow-static/{asset_name}?v=10")
     if avatar:
         avatar_box = {
             "type": "box", "layout": "vertical", "width": "112px", "height": "112px",
