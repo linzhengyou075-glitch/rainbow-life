@@ -2527,7 +2527,14 @@ def _namecard_collection_summary(group_id, user_id):
 
 
 def _namecard_flex(group_id, target_user_id, viewer_user_id):
-    """V17 Ultimate LINE 名片：輸入名片後直接顯示完整摘要卡。"""
+    """Rainbow Life 固定尺寸聊天室名片。
+
+    第一包只調整 LINE 名片，不修改個人中心頁面：
+    - 移除彩虹幣與完整名片按鍵
+    - 固定資訊列與文字行數，避免不同成員的名片忽大忽小
+    - 最底部顯示最新簽到日期
+    - 底部只保留「個人中心」按鍵
+    """
     player = get_player(group_id, target_user_id) or {}
     profile, privacy = _namecard_profile(group_id, target_user_id)
     theme, _ = _namecard_theme(profile)
@@ -2540,70 +2547,103 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
         return profile.get(field) if visible(field) else fallback
 
     level = max(1, int(player.get("level") or 1))
-    exp = max(0, int(player.get("exp") or 0))
-    coins = max(0, int(player.get("coins") or 0))
+    total_exp = max(0, int(player.get("exp") or 0))
+    current_exp = total_exp % 100
+    exp_percent = max(0, min(100, current_exp))
     streak = max(0, int(player.get("streak_count") or 0))
-    name = _safe_card_text(value("nickname") or player.get("name") or "成員", "成員", 24)
+    name = _safe_card_text(value("nickname") or player.get("name") or "成員", "成員", 20)
     gender_raw = str(value("gender") or "").strip()
     gender = "♂" if gender_raw in ("男生", "男性", "男") else ("♀" if gender_raw in ("女生", "女性", "女") else "")
     avatar = _line_avatar_url(group_id, target_user_id, profile.get("avatar_url"))
+
     equipped_frame = "rainbow_basic"
+    latest_sign = "尚未簽到"
     try:
         conn = get_connection()
         try:
             with conn.cursor() as c:
-                c.execute("SELECT equipped_frame FROM player_frame_settings WHERE group_id=%s AND user_id=%s", (group_id,target_user_id))
-                fr = c.fetchone() or {}
-                equipped_frame = str(fr.get("equipped_frame") or "rainbow_basic")
+                try:
+                    c.execute(
+                        "SELECT equipped_frame FROM player_frame_settings WHERE group_id=%s AND user_id=%s",
+                        (group_id, target_user_id),
+                    )
+                    fr = c.fetchone() or {}
+                    equipped_frame = str(fr.get("equipped_frame") or "rainbow_basic")
+                except Exception:
+                    conn.rollback()
+                try:
+                    c.execute(
+                        "SELECT sign_date FROM sign_records WHERE group_id=%s AND user_id=%s "
+                        "ORDER BY sign_date DESC, signed_at DESC LIMIT 1",
+                        (group_id, target_user_id),
+                    )
+                    sign_row = c.fetchone() or {}
+                    sign_value = sign_row.get("sign_date")
+                    if sign_value:
+                        if hasattr(sign_value, "strftime"):
+                            latest_sign = sign_value.strftime("%Y-%m-%d")
+                        else:
+                            latest_sign = str(sign_value)[:10]
+                except Exception:
+                    conn.rollback()
         finally:
             conn.close()
     except Exception:
         pass
-    frame_colors = {"rainbow_basic":"#B76CFF","star_guard":"#7E71FF","ice_crystal":"#72DFFF","forest_guard":"#65CE70","sweet_heart":"#FF79B2","flame_soul":"#FF6338","diamond_crown":"#FFD45E","leader_glory":"#FFD45E"}
-    frame_icons = {"rainbow_basic":"🌈","star_guard":"✨","ice_crystal":"❄️","forest_guard":"🍃","sweet_heart":"💗","flame_soul":"🔥","diamond_crown":"💎","leader_glory":"👑"}
+
+    frame_colors = {
+        "rainbow_basic": "#B76CFF", "star_guard": "#7E71FF", "ice_crystal": "#72DFFF",
+        "forest_guard": "#65CE70", "sweet_heart": "#FF79B2", "flame_soul": "#FF6338",
+        "diamond_crown": "#FFD45E", "leader_glory": "#FFD45E",
+    }
     frame_color = frame_colors.get(equipped_frame, theme["accent"])
-    frame_icon = frame_icons.get(equipped_frame, "🌈")
-    main_title = _safe_card_text(player.get("custom_title"), "", 18) or rank_title(level)
+    main_title = _safe_card_text(player.get("custom_title"), "", 16) or rank_title(level)
     birthday_raw = player.get("birthday") if visible("birthday") else ""
-    birthday = _safe_card_text(birthday_raw, "未設定", 12)
+    birthday = _safe_card_text(birthday_raw, "未設定", 10)
     zodiac = _namecard_zodiac(birthday_raw) or "未設定"
-    region = _safe_card_text(value("region"), "未公開", 18)
-    role_badge = get_admin_badge(group_id, target_user_id) or "👤 一般成員"
+    region = _safe_card_text(value("region"), "未公開", 10)
+    role_badge = _safe_card_text(get_admin_badge(group_id, target_user_id) or "👤 一般成員", "👤 一般成員", 16)
     collection = _namecard_collection_summary(group_id, target_user_id)
 
     if equipped_frame == "leader_glory" and avatar:
         frame_asset_url = f"{_game_admin_base_url()}/player/assets/leader-frame.png?v=2"
         avatar_box = {
-            "type": "box", "layout": "vertical", "width": "104px", "height": "104px",
+            "type": "box", "layout": "vertical", "width": "92px", "height": "92px",
             "flex": 0, "position": "relative", "contents": [
                 {
-                    "type": "image", "url": avatar, "size": "full",
-                    "aspectRatio": "1:1", "aspectMode": "cover",
-                    "position": "absolute", "offsetTop": "18px", "offsetStart": "18px",
-                    "offsetBottom": "18px", "offsetEnd": "18px", "cornerRadius": "40px"
+                    "type": "image", "url": avatar, "size": "full", "aspectRatio": "1:1",
+                    "aspectMode": "cover", "position": "absolute", "offsetTop": "16px",
+                    "offsetStart": "16px", "offsetBottom": "16px", "offsetEnd": "16px",
+                    "cornerRadius": "36px",
                 },
                 {
-                    "type": "image", "url": frame_asset_url, "size": "full",
-                    "aspectRatio": "1:1", "aspectMode": "fit",
-                    "position": "absolute", "offsetTop": "0px", "offsetStart": "0px",
-                    "offsetBottom": "0px", "offsetEnd": "0px"
+                    "type": "image", "url": frame_asset_url, "size": "full", "aspectRatio": "1:1",
+                    "aspectMode": "fit", "position": "absolute", "offsetTop": "0px",
+                    "offsetStart": "0px", "offsetBottom": "0px", "offsetEnd": "0px",
                 },
             ],
         }
     else:
         avatar_box = ({
-            "type": "box", "layout": "vertical", "width": "86px", "height": "86px",
-            "cornerRadius": "43px", "backgroundColor": theme["panel"],
-            "borderWidth": "3px", "borderColor": frame_color, "flex": 0,
-            "contents": [{"type": "image", "url": avatar, "size": "full",
-                          "aspectRatio": "1:1", "aspectMode": "cover", "cornerRadius": "43px"}]
+            "type": "box", "layout": "vertical", "width": "82px", "height": "82px",
+            "cornerRadius": "41px", "backgroundColor": theme["panel"], "borderWidth": "3px",
+            "borderColor": frame_color, "flex": 0,
+            "contents": [{"type": "image", "url": avatar, "size": "full", "aspectRatio": "1:1",
+                          "aspectMode": "cover", "cornerRadius": "41px"}],
         } if avatar else {
-            "type": "box", "layout": "vertical", "width": "86px", "height": "86px",
-            "cornerRadius": "43px", "backgroundColor": theme["panel"],
-            "borderWidth": "3px", "borderColor": frame_color,
-            "justifyContent": "center", "alignItems": "center", "flex": 0,
-            "contents": [{"type": "text", "text": "👤", "size": "xxl", "align": "center"}]
+            "type": "box", "layout": "vertical", "width": "82px", "height": "82px",
+            "cornerRadius": "41px", "backgroundColor": theme["panel"], "borderWidth": "3px",
+            "borderColor": frame_color, "justifyContent": "center", "alignItems": "center", "flex": 0,
+            "contents": [{"type": "text", "text": "👤", "size": "xxl", "align": "center"}],
         })
+
+    progress_bar = {
+        "type": "box", "layout": "vertical", "height": "8px", "cornerRadius": "4px",
+        "backgroundColor": "#24144A", "margin": "sm", "contents": [{
+            "type": "box", "layout": "vertical", "height": "8px", "cornerRadius": "4px",
+            "width": f"{max(3, exp_percent)}%", "backgroundColor": theme["button"], "contents": [],
+        }],
+    }
 
     body = [
         {
@@ -2613,70 +2653,82 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
                 {"type": "box", "layout": "vertical", "flex": 1, "contents": [
                     {"type": "box", "layout": "horizontal", "contents": [
                         {"type": "text", "text": f"{name} {gender}".strip(), "size": "lg",
-                         "weight": "bold", "color": theme["text"], "wrap": True, "flex": 1},
+                         "weight": "bold", "color": theme["text"], "wrap": False, "maxLines": 1, "flex": 1},
                         {"type": "text", "text": f"Lv.{level}", "size": "sm", "weight": "bold",
                          "color": theme["accent"], "align": "end", "flex": 0},
                     ]},
                     {"type": "text", "text": role_badge, "size": "xs", "weight": "bold",
-                     "color": theme["accent2"], "margin": "sm"},
+                     "color": theme["accent2"], "margin": "sm", "wrap": False, "maxLines": 1},
                     {"type": "text", "text": f"✨ {main_title}", "size": "sm", "weight": "bold",
-                     "color": theme["text"], "margin": "xs", "wrap": True},
-                    {"type": "text", "text": f"♈ {zodiac}　📍 {region}", "size": "xxs",
-                     "color": theme["sub"], "margin": "xs", "wrap": True},
+                     "color": theme["text"], "margin": "xs", "wrap": False, "maxLines": 1},
                 ]},
             ],
         },
         {"type": "separator", "margin": "lg", "color": theme["border"]},
+        {
+            "type": "box", "layout": "horizontal", "spacing": "sm", "margin": "md", "contents": [
+                {"type": "text", "text": f"🎂 {birthday}", "size": "xxs", "color": theme["sub"],
+                 "align": "center", "flex": 1, "wrap": False, "maxLines": 1},
+                {"type": "text", "text": f"♈ {zodiac}", "size": "xxs", "color": theme["sub"],
+                 "align": "center", "flex": 1, "wrap": False, "maxLines": 1},
+                {"type": "text", "text": f"📍 {region}", "size": "xxs", "color": theme["sub"],
+                 "align": "center", "flex": 1, "wrap": False, "maxLines": 1},
+            ],
+        },
+        {
+            "type": "box", "layout": "vertical", "margin": "md", "paddingAll": "11px",
+            "cornerRadius": "14px", "backgroundColor": theme["panel"], "contents": [
+                {"type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": "⭐ EXP", "size": "xs", "weight": "bold",
+                     "color": theme["text"], "flex": 1},
+                    {"type": "text", "text": f"{current_exp} / 100", "size": "xs",
+                     "color": theme["sub"], "align": "end"},
+                ]},
+                progress_bar,
+            ],
+        },
+        {
+            "type": "box", "layout": "horizontal", "spacing": "sm", "margin": "md", "contents": [
+                {"type": "box", "layout": "vertical", "alignItems": "center", "flex": 1,
+                 "paddingAll": "9px", "cornerRadius": "12px", "backgroundColor": theme["panel"],
+                 "contents": [
+                     {"type": "text", "text": f"🔥 {streak}天", "size": "sm", "weight": "bold",
+                      "color": theme["text"], "align": "center"},
+                     {"type": "text", "text": "連續簽到", "size": "xxs", "color": theme["sub"],
+                      "align": "center", "margin": "xs"},
+                 ]},
+                {"type": "box", "layout": "vertical", "alignItems": "center", "flex": 1,
+                 "paddingAll": "9px", "cornerRadius": "12px", "backgroundColor": theme["panel"],
+                 "contents": [
+                     {"type": "text", "text": f"🏆 {collection['achievements']}", "size": "sm",
+                      "weight": "bold", "color": theme["text"], "align": "center"},
+                     {"type": "text", "text": "成就", "size": "xxs", "color": theme["sub"],
+                      "align": "center", "margin": "xs"},
+                 ]},
+            ],
+        },
+        {
+            "type": "box", "layout": "horizontal", "margin": "md", "paddingAll": "10px",
+            "cornerRadius": "14px", "backgroundColor": theme["panel"], "contents": [
+                {"type": "text", "text": f"📅 最新簽到：{latest_sign}", "size": "xs",
+                 "weight": "bold", "color": theme["text"], "align": "center", "flex": 1,
+                 "wrap": False, "maxLines": 1},
+            ],
+        },
     ]
 
-    body.append({
-        "type": "box", "layout": "horizontal", "margin": "md", "paddingAll": "11px",
-        "cornerRadius": "15px", "backgroundColor": theme["panel"],
-        "contents": [{"type": "text", "text": f"{frame_icon} 已套用靜態頭像框",
-                      "size": "xs", "color": theme["sub"], "flex": 1}],
-    })
-
-    stat_boxes = []
-    for icon, value_text, label in [
-        ("⭐", f"{exp:,}", "EXP"),
-        ("🌈", f"{coins:,}", "彩虹幣"),
-        ("🔥", f"{streak}天", "連續簽到"),
-    ]:
-        stat_boxes.append({
-            "type": "box", "layout": "vertical", "alignItems": "center", "flex": 1,
-            "paddingAll": "7px", "cornerRadius": "12px", "backgroundColor": theme["panel"],
-            "contents": [
-                {"type": "text", "text": f"{icon} {value_text}", "size": "sm", "weight": "bold",
-                 "color": theme["text"], "align": "center"},
-                {"type": "text", "text": label, "size": "xxs", "color": theme["sub"],
-                 "align": "center", "margin": "xs"},
-            ],
-        })
-    body.append({"type": "box", "layout": "horizontal", "spacing": "sm",
-                 "margin": "md", "contents": stat_boxes})
-    body.append({
-        "type": "box", "layout": "horizontal", "margin": "md", "paddingAll": "10px",
-        "cornerRadius": "14px", "backgroundColor": theme["panel"],
-        "contents": [
-            {"type": "text", "text": f"🏆 成就 {collection['achievements']}　🎂 {birthday}",
-             "size": "xs", "color": theme["text"], "wrap": True, "flex": 1},
-        ],
-    })
-
-    full_url = make_public_card_url(group_id, target_user_id)
-    footer = []
-    if full_url:
-        footer.append({
+    personal_url = make_player_access_url(viewer_user_id, group_id, "/player")
+    footer_contents = []
+    if personal_url:
+        footer_contents.append({
             "type": "button", "style": "primary", "height": "sm", "color": theme["button"],
-            "action": {"type": "uri", "label": "✨ 查看完整名片", "uri": full_url},
+            "action": {"type": "uri", "label": "👤 個人中心", "uri": personal_url},
         })
-    if is_self:
-        personal_url = make_player_access_url(viewer_user_id, group_id, "/player")
-        if personal_url:
-            footer.append({
-                "type": "button", "style": "secondary", "height": "sm",
-                "action": {"type": "uri", "label": "👤 個人中心", "uri": personal_url},
-            })
+    else:
+        footer_contents.append({
+            "type": "text", "text": "請重新從 LINE 開啟個人中心", "size": "xs",
+            "align": "center", "color": theme["sub"],
+        })
 
     bubble = {
         "type": "bubble", "size": "kilo",
@@ -2687,20 +2739,16 @@ def _namecard_flex(group_id, target_user_id, viewer_user_id):
                        "separatorColor": theme["border"]},
         },
         "header": {"type": "box", "layout": "horizontal", "paddingAll": "10px", "contents": [
-            {"type": "text", "text": "🌈 Rainbow Life", "size": "sm",
-             "weight": "bold", "color": theme["text"], "flex": 1},
-            {"type": "text", "text": theme["label"], "size": "xxs",
-             "color": theme["accent"], "align": "end"},
+            {"type": "text", "text": "🌈 Rainbow Life", "size": "sm", "weight": "bold",
+             "color": theme["text"], "flex": 1},
+            {"type": "text", "text": "名片", "size": "xxs", "color": theme["accent"], "align": "end"},
         ]},
         "body": {"type": "box", "layout": "vertical", "paddingAll": "14px",
                  "backgroundColor": theme["card"], "contents": body},
-        "footer": {"type": "box", "layout": "vertical", "spacing": "sm",
-                   "paddingAll": "10px", "contents": footer or [
-                       {"type": "text", "text": "完整名片網址尚未設定",
-                        "size": "xs", "align": "center", "color": theme["sub"]}
-                   ]},
+        "footer": {"type": "box", "layout": "vertical", "paddingAll": "10px",
+                   "contents": footer_contents},
     }
-    return FlexSendMessage(alt_text=f"🌈 {name} 的 Ultimate 名片", contents=bubble)
+    return FlexSendMessage(alt_text=f"🌈 {name} 的 Rainbow Life 名片", contents=bubble)
 
 def _resolve_namecard_target(group_id, query, current_user_id):
     query = str(query or '').strip()
